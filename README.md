@@ -193,6 +193,11 @@ sudo ./bin/wxview init
 `sessions`、`messages`、`timeline`、`search` 等命令始终直接读取本地解密 cache
 或派生 index。
 
+实现上，CLI flags 和 HTTP params 只是不同入口；contacts、sessions、messages、
+timeline、search、favorites、articles、sns、new-messages 和 cache refresh 的查询编排
+复用同一个 `internal/query` 层。CLI 负责 table/json/jsonl/csv 输出，WebAPI 负责 HTTP
+envelope 和错误响应。
+
 WebAPI 也不复用 daemon socket。`wxview api start` 是独立 HTTP 后台入口，默认只监听
 `127.0.0.1:38765`，业务接口会返回账号和 server 标识，方便确认当前实例读取的是哪个账号。
 V1 只支持一个 WebAPI 实例；无论已有实例是 `api start` 还是 `api serve` 启动的，再执行

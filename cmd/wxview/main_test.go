@@ -8,10 +8,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"wxview/internal/buildinfo"
 	"wxview/internal/contacts"
 	"wxview/internal/messages"
+	wxquery "wxview/internal/query"
 	"wxview/internal/sessions"
 )
 
@@ -209,7 +211,7 @@ func TestTimingTraceWritesDurations(t *testing.T) {
 
 func TestLocalTimezoneNamePrefersTZ(t *testing.T) {
 	t.Setenv("TZ", "Asia/Shanghai")
-	if got := localTimezoneName(); got != "Asia/Shanghai" {
+	if got := wxquery.LocalTimezoneName(); got != "Asia/Shanghai" {
 		t.Fatalf("timezone = %q, want Asia/Shanghai", got)
 	}
 }
@@ -355,38 +357,34 @@ func TestWriteCount(t *testing.T) {
 }
 
 func TestParseTimeBoundDateEndIncludesFullDay(t *testing.T) {
-	start, hasStart, err := parseTimeBound("2026-05-14", "start", false)
+	got, err := wxquery.ParseMessageRange("", "2026-05-14", "2026-05-14", time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
-	end, hasEnd, err := parseTimeBound("2026-05-14", "end", true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !hasStart || !hasEnd {
+	if !got.HasStart || !got.HasEnd {
 		t.Fatal("expected parsed bounds")
 	}
-	if end-start != 24*60*60-1 {
-		t.Fatalf("date-only end should include full day; start=%d end=%d", start, end)
+	if got.End-got.Start != 24*60*60-1 {
+		t.Fatalf("date-only end should include full day; start=%d end=%d", got.Start, got.End)
 	}
 }
 
 func TestParseMessageRangeDate(t *testing.T) {
-	start, end, hasStart, hasEnd, err := parseMessageRange("2026-05-14", "", "")
+	got, err := wxquery.ParseMessageRange("2026-05-14", "", "", time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !hasStart || !hasEnd {
+	if !got.HasStart || !got.HasEnd {
 		t.Fatal("expected date to provide both bounds")
 	}
-	if end-start != 24*60*60-1 {
-		t.Fatalf("date should expand to one full day; start=%d end=%d", start, end)
+	if got.End-got.Start != 24*60*60-1 {
+		t.Fatalf("date should expand to one full day; start=%d end=%d", got.Start, got.End)
 	}
 }
 
 func TestParseMessageRangeRejectsDateWithExplicitBounds(t *testing.T) {
-	_, _, _, _, err := parseMessageRange("today", "2026-05-14", "")
-	if err == nil || !strings.Contains(err.Error(), "--date cannot be combined") {
+	_, err := wxquery.ParseMessageRange("today", "2026-05-14", "", time.Now())
+	if err == nil || !strings.Contains(err.Error(), "date cannot be combined") {
 		t.Fatalf("expected date/start conflict error, got %v", err)
 	}
 }

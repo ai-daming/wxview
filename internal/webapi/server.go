@@ -15,6 +15,7 @@ import (
 	"wxview/internal/contacts"
 	"wxview/internal/identity"
 	"wxview/internal/key"
+	wxquery "wxview/internal/query"
 )
 
 const DefaultAddr = "127.0.0.1:38765"
@@ -312,45 +313,23 @@ func (h *handler) handleContacts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, cachePath, info, err := h.resolveAccount(r.Context(), false)
+	_, _, info, err := h.resolveAccount(r.Context(), false)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "account_discovery_failed", err.Error())
 		return
 	}
-	if _, err := os.Stat(cachePath); err != nil {
-		if os.IsNotExist(err) {
-			writeError(w, http.StatusNotFound, "cache_not_found", "contact cache does not exist; run `wxview init` first")
-			return
-		}
-		writeError(w, http.StatusInternalServerError, "cache_stat_failed", err.Error())
-		return
-	}
-	list, err := contacts.NewService(cachePath).List(r.Context())
+	result, err := h.queryRuntime().Contacts(r.Context(), wxquery.ContactsRequest{
+		Kind:      kind,
+		Query:     query.Get("query"),
+		Username:  query.Get("username"),
+		Sort:      sortBy,
+		Limit:     limit,
+		Offset:    offset,
+		CacheMode: wxquery.CacheMode{ReadOnly: true},
+	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "contacts_query_failed", err.Error())
+		writeQueryError(w, "contacts_query_failed", err)
 		return
-	}
-	opts := contacts.QueryOptions{
-		Kind:     kind,
-		Query:    query.Get("query"),
-		Username: query.Get("username"),
-		Sort:     sortBy,
-	}
-	filtered := contacts.ApplyQueryOptions(list, opts)
-	total := len(filtered)
-	opts.Limit = limit
-	opts.Offset = offset
-	page := contacts.ApplyQueryOptions(list, opts)
-	hasMore := offset+len(page) < total
-	nextURL := ""
-	if hasMore && limit > 0 {
-		next := *r.URL
-		values := next.Query()
-		values.Set("limit", strconv.Itoa(limit))
-		values.Set("offset", strconv.Itoa(offset+limit))
-		values.Del("refresh")
-		next.RawQuery = values.Encode()
-		nextURL = next.RequestURI()
 	}
 
 	writeJSON(w, http.StatusOK, ContactsResponse{
@@ -361,12 +340,12 @@ func (h *handler) handleContacts(w http.ResponseWriter, r *http.Request) {
 			Resource:      "contacts",
 			Limit:         limit,
 			Offset:        offset,
-			Returned:      len(page),
-			Total:         total,
-			HasMore:       hasMore,
-			NextURL:       nextURL,
+			Returned:      len(result.Items),
+			Total:         result.Total,
+			HasMore:       result.HasMore,
+			NextURL:       nextOffsetURL(r, limit, offset, result.HasMore),
 		},
-		Items: contactItems(page),
+		Items: contactItems(result.Items),
 	})
 }
 

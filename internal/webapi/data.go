@@ -1,21 +1,16 @@
 package webapi
 
 import (
-	"fmt"
 	"net/http"
-	"sort"
 	"strings"
-	"time"
 
 	"wxview/internal/articles"
 	"wxview/internal/contacts"
 	"wxview/internal/favorites"
-	"wxview/internal/key"
-	"wxview/internal/media"
 	"wxview/internal/messages"
+	wxquery "wxview/internal/query"
 	"wxview/internal/sessions"
 	"wxview/internal/sns"
-	"wxview/internal/timeline"
 )
 
 const (
@@ -90,14 +85,6 @@ type ActionResponse[T any] struct {
 	Result T          `json:"result"`
 }
 
-type RefreshResult struct {
-	Scope      string   `json:"scope"`
-	Refreshed  []string `json:"refreshed"`
-	DurationMS int64    `json:"duration_ms"`
-	UsedDaemon bool     `json:"used_daemon"`
-	Warnings   []string `json:"warnings,omitempty"`
-}
-
 type ResetResult struct {
 	Reset     bool   `json:"reset"`
 	StatePath string `json:"state_path"`
@@ -123,6 +110,13 @@ type ContactDetailItem struct {
 	AvatarReason string `json:"avatar_reason,omitempty"`
 }
 
+func (h *handler) queryRuntime() wxquery.Runtime {
+	return wxquery.Runtime{
+		DiscoverContact:  h.discoverContact,
+		ContactCachePath: h.contactCachePath,
+	}
+}
+
 func (h *handler) handleContactDetail(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "use GET")
@@ -133,25 +127,19 @@ func (h *handler) handleContactDetail(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "missing_username", "username is required")
 		return
 	}
-	_, cachePath, info, err := h.contactCache(r.Context())
+	_, _, info, err := h.resolveAccount(r.Context(), false)
 	if err != nil {
-		writeQueryError(w, "contact_cache_failed", err)
+		writeError(w, http.StatusInternalServerError, "account_discovery_failed", err.Error())
 		return
 	}
-	item, err := contacts.NewService(cachePath).Detail(r.Context(), username)
+	result, err := h.queryRuntime().ContactDetail(r.Context(), wxquery.ContactDetailRequest{
+		Username:      username,
+		ResolveAvatar: true,
+		CacheMode:     wxquery.CacheMode{ReadOnly: true},
+	})
 	if err != nil {
 		writeQueryError(w, "contact_detail_failed", err)
 		return
-	}
-	if headPath, ok := headImageCachePathReadOnly(); ok {
-		if target, _, ok := key.HasContactCache(); ok {
-			if cacheDir, err := media.MediaCacheDir(target.Account); err == nil {
-				avatar := media.ResolveAvatar(headPath, item.Username, cacheDir)
-				item.AvatarStatus = avatar.Status
-				item.AvatarPath = avatar.Path
-				item.AvatarReason = avatar.Reason
-			}
-		}
 	}
 	meta := h.listMeta(info, "contacts.detail")
 	total := 1
@@ -159,7 +147,7 @@ func (h *handler) handleContactDetail(w http.ResponseWriter, r *http.Request) {
 	meta.Returned = 1
 	writeJSON(w, http.StatusOK, ItemsResponse[ContactDetailItem]{
 		Meta:  meta,
-		Items: []ContactDetailItem{contactDetailItem(item)},
+		Items: []ContactDetailItem{contactDetailItem(result.Item)},
 	})
 }
 
@@ -179,39 +167,29 @@ func (h *handler) handleMembers(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_selector", "username cannot be combined with query")
 		return
 	}
-	_, cachePath, info, err := h.contactCache(r.Context())
+	_, _, info, err := h.resolveAccount(r.Context(), false)
 	if err != nil {
-		writeQueryError(w, "contact_cache_failed", err)
+		writeError(w, http.StatusInternalServerError, "account_discovery_failed", err.Error())
 		return
 	}
-	service := contacts.NewService(cachePath)
-	if query != "" {
-		list, err := service.List(r.Context())
-		if err != nil {
-			writeQueryError(w, "contacts_query_failed", err)
-			return
-		}
-		matched := contacts.ApplyQueryOptions(list, contacts.QueryOptions{Kind: contacts.KindChatroom, Query: query})
-		if len(matched) != 1 {
-			writeError(w, http.StatusBadRequest, "ambiguous_query", fmt.Sprintf("query matched %d chatrooms; use username for an exact chatroom", len(matched)))
-			return
-		}
-		username = matched[0].Username
-	}
-	result, err := service.Members(r.Context(), username)
+	result, err := h.queryRuntime().Members(r.Context(), wxquery.MembersRequest{
+		Username:  username,
+		Query:     query,
+		CacheMode: wxquery.CacheMode{ReadOnly: true},
+	})
 	if err != nil {
 		writeQueryError(w, "members_query_failed", err)
 		return
 	}
 	meta := h.listMeta(info, "members")
-	total := result.Count
+	total := result.Group.Count
 	meta.Total = &total
-	meta.Returned = len(result.Members)
-	meta.GroupUsername = result.Username
-	meta.GroupDisplayName = result.DisplayName
-	meta.Owner = result.Owner
-	meta.OwnerDisplayName = result.OwnerDisplayName
-	writeJSON(w, http.StatusOK, ItemsResponse[contacts.Member]{Meta: meta, Items: result.Members})
+	meta.Returned = len(result.Group.Members)
+	meta.GroupUsername = result.Group.Username
+	meta.GroupDisplayName = result.Group.DisplayName
+	meta.Owner = result.Group.Owner
+	meta.OwnerDisplayName = result.Group.OwnerDisplayName
+	writeJSON(w, http.StatusOK, ItemsResponse[contacts.Member]{Meta: meta, Items: result.Group.Members})
 }
 
 func (h *handler) handleSessions(w http.ResponseWriter, r *http.Request, unreadOnly bool) {
@@ -243,21 +221,18 @@ func (h *handler) handleSessions(w http.ResponseWriter, r *http.Request, unreadO
 		writeError(w, http.StatusInternalServerError, "account_discovery_failed", err.Error())
 		return
 	}
-	sessionPath, err := sessionCachePathReadOnly()
-	if err != nil {
-		writeQueryError(w, "session_cache_failed", err)
-		return
-	}
-	list, err := sessions.NewService(sessionPath).List(r.Context(), sessions.QueryOptions{UnreadOnly: unreadOnly})
+	result, err := h.queryRuntime().Sessions(r.Context(), wxquery.SessionsRequest{
+		Kind:       kind,
+		Query:      q.Get("query"),
+		UnreadOnly: unreadOnly,
+		Limit:      limit,
+		Offset:     offset,
+		CacheMode:  wxquery.CacheMode{ReadOnly: true},
+	})
 	if err != nil {
 		writeQueryError(w, "sessions_query_failed", err)
 		return
 	}
-	sessions.ApplyChatInfo(list, loadExistingChatInfoMap(r.Context()))
-	filtered := sessions.ApplyQueryOptions(list, sessions.QueryOptions{Kind: kind, Query: q.Get("query")})
-	total := len(filtered)
-	page := sessions.ApplyQueryOptions(list, sessions.QueryOptions{Kind: kind, Query: q.Get("query"), Limit: limit, Offset: offset})
-	hasMore := offset+len(page) < total
 	resource := "sessions"
 	if unreadOnly {
 		resource = "unread"
@@ -265,11 +240,11 @@ func (h *handler) handleSessions(w http.ResponseWriter, r *http.Request, unreadO
 	meta := h.listMeta(info, resource)
 	meta.Limit = intPtr(limit)
 	meta.Offset = intPtr(offset)
-	meta.Returned = len(page)
-	meta.Total = &total
-	meta.HasMore = &hasMore
-	meta.NextURL = nextOffsetURL(r, limit, offset, hasMore)
-	writeJSON(w, http.StatusOK, ItemsResponse[sessions.Session]{Meta: meta, Items: page})
+	meta.Returned = len(result.Items)
+	meta.Total = &result.Total
+	meta.HasMore = &result.HasMore
+	meta.NextURL = nextOffsetURL(r, limit, offset, result.HasMore)
+	writeJSON(w, http.StatusOK, ItemsResponse[sessions.Session]{Meta: meta, Items: result.Items})
 }
 
 func (h *handler) handleMessages(w http.ResponseWriter, r *http.Request) {
@@ -308,56 +283,39 @@ func (h *handler) handleMessages(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_no_index", err.Error())
 		return
 	}
-	start, end, hasStart, hasEnd, err := parseMessageRange(q.Get("date"), q.Get("start"), q.Get("end"))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_time_range", err.Error())
-		return
-	}
-	target, _, info, err := h.resolveAccount(r.Context(), false)
+	_, _, info, err := h.resolveAccount(r.Context(), false)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "account_discovery_failed", err.Error())
 		return
 	}
-	cachePaths, err := messageCachePathsReadOnly()
-	if err != nil {
-		writeQueryError(w, "message_cache_failed", err)
-		return
-	}
-	queryLimit := limit
-	if limit > 0 {
-		queryLimit = limit + 1
-	}
-	service := messages.NewService(cachePaths)
-	list, execution, err := listMessagesMaybeIndex(r.Context(), target.Account, cachePaths, service, !noIndex, messages.QueryOptions{
+	result, err := h.queryRuntime().Messages(r.Context(), wxquery.MessagesRequest{
 		Username:      username,
-		Start:         start,
-		End:           end,
+		Date:          q.Get("date"),
+		StartText:     q.Get("start"),
+		EndText:       q.Get("end"),
 		AfterSeq:      afterSeq,
-		HasStart:      hasStart,
-		HasEnd:        hasEnd,
-		HasAfterSeq:   afterSeq > 0,
-		IncludeSource: includeSource,
-		Limit:         queryLimit,
+		Limit:         limit,
 		Offset:        offset,
+		IncludeSource: includeSource,
+		NoIndex:       noIndex,
+		WantHasMore:   true,
+		CacheMode:     wxquery.CacheMode{ReadOnly: true},
 	})
 	if err != nil {
 		writeQueryError(w, "messages_query_failed", err)
 		return
 	}
-	enrichMessageMedia(target, list)
-	messages.ApplyChatInfo(list, chatInfoMapForUsernames(r.Context(), username))
-	page, hasMore := trimMessagePage(list, limit)
-	meta := h.messageMeta(info, "messages", limit, len(page), execution)
+	meta := h.messageMeta(info, "messages", limit, len(result.Items), result.Execution)
 	meta.Offset = intPtr(offset)
 	meta.Username = username
-	meta.Start = formatMetaTime(start, hasStart)
-	meta.End = formatMetaTime(end, hasEnd)
-	meta.HasMore = &hasMore
-	if hasMore && len(page) > 0 {
-		meta.NextAfterSeq = page[len(page)-1].Seq
+	meta.Start = wxquery.FormatMetaTime(result.Range.Start, result.Range.HasStart)
+	meta.End = wxquery.FormatMetaTime(result.Range.End, result.Range.HasEnd)
+	meta.HasMore = &result.HasMore
+	if result.HasMore && result.NextAfterSeq > 0 {
+		meta.NextAfterSeq = result.NextAfterSeq
 		meta.NextURL = nextMessagesURL(r, meta.NextAfterSeq, limit)
 	}
-	writeJSON(w, http.StatusOK, ItemsResponse[messages.Message]{Meta: meta, Items: page})
+	writeJSON(w, http.StatusOK, ItemsResponse[messages.Message]{Meta: meta, Items: result.Items})
 }
 
 func (h *handler) handleSearch(w http.ResponseWriter, r *http.Request) {
@@ -400,58 +358,42 @@ func (h *handler) handleSearch(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_source", err.Error())
 		return
 	}
-	start, end, hasStart, hasEnd, err := parseMessageRange(q.Get("date"), q.Get("start"), q.Get("end"))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_time_range", err.Error())
-		return
-	}
-	target, _, info, err := h.resolveAccount(r.Context(), false)
+	_, _, info, err := h.resolveAccount(r.Context(), false)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "account_discovery_failed", err.Error())
 		return
 	}
-	chats, matchedChats, err := selectSearchChats(r.Context(), username, kind, chatQuery)
-	if err != nil {
-		writeQueryError(w, "chat_selection_failed", err)
-		return
-	}
-	cachePaths, err := messageCachePathsReadOnly()
-	if err != nil {
-		writeQueryError(w, "message_cache_failed", err)
-		return
-	}
-	list, total, err := messages.NewService(cachePaths).Search(r.Context(), messages.SearchOptions{
-		Chats:         chats,
+	result, err := h.queryRuntime().Search(r.Context(), wxquery.SearchRequest{
 		Query:         query,
-		Start:         start,
-		End:           end,
-		HasStart:      hasStart,
-		HasEnd:        hasEnd,
-		IncludeSource: includeSource,
+		Kind:          kind,
+		ChatQuery:     chatQuery,
+		Username:      username,
+		Date:          q.Get("date"),
+		StartText:     q.Get("start"),
+		EndText:       q.Get("end"),
 		Limit:         limit,
 		Offset:        offset,
+		IncludeSource: includeSource,
+		CacheMode:     wxquery.CacheMode{ReadOnly: true},
 	})
 	if err != nil {
 		writeQueryError(w, "search_failed", err)
 		return
 	}
-	enrichMessageMedia(target, list)
-	hasMore := offset+len(list) < total
-	execution := scanExecution("index_not_supported_for_search")
-	meta := h.messageMeta(info, "search", limit, len(list), execution)
+	meta := h.messageMeta(info, "search", limit, len(result.Items), result.Execution)
 	meta.Offset = intPtr(offset)
 	meta.Query = query
 	meta.Kind = kind
 	meta.ChatQuery = chatQuery
 	meta.Username = username
-	meta.Start = formatMetaTime(start, hasStart)
-	meta.End = formatMetaTime(end, hasEnd)
-	meta.TotalMatches = &total
-	meta.Total = &total
-	meta.MatchedChats = matchedChats
-	meta.HasMore = &hasMore
-	meta.NextURL = nextOffsetURL(r, limit, offset, hasMore)
-	writeJSON(w, http.StatusOK, ItemsResponse[messages.Message]{Meta: meta, Items: list})
+	meta.Start = wxquery.FormatMetaTime(result.Range.Start, result.Range.HasStart)
+	meta.End = wxquery.FormatMetaTime(result.Range.End, result.Range.HasEnd)
+	meta.TotalMatches = &result.TotalMatches
+	meta.Total = &result.TotalMatches
+	meta.MatchedChats = result.MatchedChats
+	meta.HasMore = &result.HasMore
+	meta.NextURL = nextOffsetURL(r, limit, offset, result.HasMore)
+	writeJSON(w, http.StatusOK, ItemsResponse[messages.Message]{Meta: meta, Items: result.Items})
 }
 
 func (h *handler) handleTimeline(w http.ResponseWriter, r *http.Request) {
@@ -494,52 +436,30 @@ func (h *handler) handleTimeline(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_no_index", err.Error())
 		return
 	}
-	start, end, startLabel, endLabel, err := parseTimelineRange(q.Get("date"), q.Get("start"), q.Get("end"))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_time_range", err.Error())
-		return
-	}
-	target, _, info, err := h.resolveAccount(r.Context(), false)
+	_, _, info, err := h.resolveAccount(r.Context(), false)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "account_discovery_failed", err.Error())
 		return
 	}
-	chats, matchedChats, err := selectTimelineChats(r.Context(), username, kind, query, kindProvided)
-	if err != nil {
-		writeQueryError(w, "chat_selection_failed", err)
-		return
-	}
-	cachePaths, err := messageCachePathsReadOnly()
-	if err != nil {
-		writeQueryError(w, "message_cache_failed", err)
-		return
-	}
-	queryIdentity := timeline.QueryIdentity{Username: username, Start: start, End: end}
-	if username == "" {
-		queryIdentity.Kind = kind
-		queryIdentity.Query = query
-	}
-	queryHash, err := timeline.QueryHash(queryIdentity)
-	if err != nil {
-		writeQueryError(w, "timeline_query_hash_failed", err)
-		return
-	}
-	service := messages.NewService(cachePaths)
-	result, execution, err := timelineMaybeIndex(r.Context(), target.Account, cachePaths, service, !noIndex, timeline.QueryOptions{
-		Chats:         chats,
-		Start:         start,
-		End:           end,
+	result, err := h.queryRuntime().Timeline(r.Context(), wxquery.TimelineRequest{
+		Username:      username,
+		Kind:          kind,
+		KindProvided:  kindProvided,
+		Query:         query,
+		Date:          q.Get("date"),
+		StartText:     q.Get("start"),
+		EndText:       q.Get("end"),
 		Limit:         limit,
 		Cursor:        strings.TrimSpace(q.Get("cursor")),
-		QueryHash:     queryHash,
 		IncludeSource: includeSource,
+		NoIndex:       noIndex,
+		CacheMode:     wxquery.CacheMode{ReadOnly: true},
 	})
 	if err != nil {
 		writeQueryError(w, "timeline_query_failed", err)
 		return
 	}
-	enrichMessageMedia(target, result.Items)
-	meta := h.messageMeta(info, "timeline", limit, len(result.Items), execution)
+	meta := h.messageMeta(info, "timeline", limit, len(result.Items), result.Execution)
 	meta.Username = username
 	meta.Kind = ""
 	meta.Query = ""
@@ -547,10 +467,10 @@ func (h *handler) handleTimeline(w http.ResponseWriter, r *http.Request) {
 		meta.Kind = kind
 		meta.Query = query
 	}
-	meta.Start = startLabel
-	meta.End = endLabel
+	meta.Start = result.Range.StartLabel
+	meta.End = result.Range.EndLabel
 	meta.Cursor = strings.TrimSpace(q.Get("cursor"))
-	meta.MatchedChats = matchedChats
+	meta.MatchedChats = result.MatchedChats
 	meta.HasMore = &result.HasMore
 	if result.HasMore {
 		meta.NextCursor = result.NextCursor
@@ -606,128 +526,47 @@ func (h *handler) handleNewMessagesReset(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "use POST")
 		return
 	}
-	target, _, info, err := h.resolveAccount(r.Context(), false)
+	_, _, info, err := h.resolveAccount(r.Context(), false)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "account_discovery_failed", err.Error())
 		return
 	}
-	statePath, err := newMessagesStatePath(target.Account)
+	result, err := h.queryRuntime().ResetNewMessages(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "state_path_failed", err.Error())
-		return
-	}
-	if err := saveNewMessagesState(statePath, map[string]int64{}); err != nil {
 		writeError(w, http.StatusInternalServerError, "state_reset_failed", err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, ActionResponse[ResetResult]{
 		Meta:   h.actionMeta(info, "new_messages.reset"),
-		Result: ResetResult{Reset: true, StatePath: statePath},
+		Result: ResetResult{Reset: result.Reset, StatePath: result.StatePath},
 	})
 }
 
 func (h *handler) writeNewMessages(w http.ResponseWriter, r *http.Request, limit int, includeSource bool, commit bool, reset bool) {
-	target, _, info, err := h.resolveAccount(r.Context(), false)
+	_, _, info, err := h.resolveAccount(r.Context(), false)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "account_discovery_failed", err.Error())
 		return
 	}
-	sessionPath, err := sessionCachePathReadOnly()
-	if err != nil {
-		writeQueryError(w, "session_cache_failed", err)
-		return
-	}
-	statePath := newMessagesStatePathForAccount(target.Account)
-	state, loaded, err := loadNewMessagesState(statePath)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "state_load_failed", err.Error())
-		return
-	}
-	if reset {
-		state = map[string]int64{}
-		loaded = false
-	}
-	sessionList, err := sessions.NewService(sessionPath).List(r.Context(), sessions.QueryOptions{})
-	if err != nil {
-		writeQueryError(w, "sessions_query_failed", err)
-		return
-	}
-	fallback := time.Now().Add(-24 * time.Hour).Unix()
-	currentState := make(map[string]int64, len(sessionList))
-	changedSince := map[string]int64{}
-	for _, item := range sessionList {
-		if item.Username == "" || item.LastTimestamp <= 0 {
-			continue
-		}
-		currentState[item.Username] = item.LastTimestamp
-		since := fallback
-		if loaded {
-			if previous, ok := state[item.Username]; ok {
-				since = previous
-			}
-		}
-		if item.LastTimestamp > since {
-			changedSince[item.Username] = since
-		}
-	}
-	cachePaths, err := messageCachePathsReadOnly()
-	if err != nil {
-		writeQueryError(w, "message_cache_failed", err)
-		return
-	}
-	service := messages.NewService(cachePaths)
-	var list []messages.Message
-	for username, since := range changedSince {
-		rows, err := service.List(r.Context(), messages.QueryOptions{
-			Username:      username,
-			Start:         since + 1,
-			HasStart:      true,
-			IncludeSource: includeSource,
-		})
-		if err != nil {
-			writeQueryError(w, "new_messages_query_failed", err)
-			return
-		}
-		list = append(list, rows...)
-	}
-	messages.ApplyChatInfo(list, loadExistingChatInfoMap(r.Context()))
-	sort.SliceStable(list, func(i, j int) bool {
-		if list[i].CreateTime != list[j].CreateTime {
-			return list[i].CreateTime < list[j].CreateTime
-		}
-		if list[i].Seq != list[j].Seq {
-			return list[i].Seq < list[j].Seq
-		}
-		return list[i].ID < list[j].ID
+	result, err := h.queryRuntime().NewMessages(r.Context(), wxquery.NewMessagesRequest{
+		Limit:         limit,
+		IncludeSource: includeSource,
+		Commit:        commit,
+		Reset:         reset,
+		CacheMode:     wxquery.CacheMode{ReadOnly: true},
 	})
-	page, hasMore := trimMessagePage(list, limit)
-	enrichMessageMedia(target, page)
-	if commit {
-		newState := copyState(currentState)
-		for username, since := range changedSince {
-			newState[username] = since
-		}
-		for _, item := range page {
-			if item.ChatUsername == "" || item.CreateTime <= 0 {
-				continue
-			}
-			if item.CreateTime > newState[item.ChatUsername] {
-				newState[item.ChatUsername] = item.CreateTime
-			}
-		}
-		if err := saveNewMessagesState(statePath, newState); err != nil {
-			writeError(w, http.StatusInternalServerError, "state_save_failed", err.Error())
-			return
-		}
+	if err != nil {
+		writeQueryError(w, "new_messages_query_failed", err)
+		return
 	}
-	meta := h.messageMeta(info, "new-messages", limit, len(page), queryExecutionMeta{})
+	meta := h.messageMeta(info, "new-messages", limit, len(result.Items), wxquery.ExecutionMeta{})
 	meta.Mode = "new_messages"
-	meta.HasMore = &hasMore
-	meta.FirstRun = boolPtr(!loaded)
+	meta.HasMore = &result.HasMore
+	meta.FirstRun = boolPtr(result.FirstRun)
 	meta.Reset = boolPtr(reset)
-	meta.ChangedChats = len(changedSince)
-	meta.StatePath = statePath
-	writeJSON(w, http.StatusOK, ItemsResponse[messages.Message]{Meta: meta, Items: page})
+	meta.ChangedChats = result.ChangedChats
+	meta.StatePath = result.StatePath
+	writeJSON(w, http.StatusOK, ItemsResponse[messages.Message]{Meta: meta, Items: result.Items})
 }
 
 func (h *handler) handleFavorites(w http.ResponseWriter, r *http.Request) {
@@ -751,32 +590,26 @@ func (h *handler) handleFavorites(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "account_discovery_failed", err.Error())
 		return
 	}
-	target, cachePath, err := favoriteCachePathReadOnly()
-	if err != nil {
-		writeQueryError(w, "favorite_cache_failed", err)
-		return
-	}
-	service := favorites.NewServiceWithDataDir(cachePath, target.DataDir)
-	totalItems, err := service.List(r.Context(), favorites.QueryOptions{Type: q.Get("type"), Query: q.Get("query")})
-	if err != nil {
-		writeQueryError(w, "favorites_query_failed", err)
-		return
-	}
-	items, err := service.List(r.Context(), favorites.QueryOptions{Type: q.Get("type"), Query: q.Get("query"), Limit: limit, Offset: offset})
+	result, err := h.queryRuntime().Favorites(r.Context(), wxquery.FavoritesRequest{
+		Type:      q.Get("type"),
+		Query:     q.Get("query"),
+		Limit:     limit,
+		Offset:    offset,
+		WantTotal: true,
+		CacheMode: wxquery.CacheMode{ReadOnly: true},
+	})
 	if err != nil {
 		writeQueryError(w, "favorites_query_failed", err)
 		return
 	}
-	total := len(totalItems)
-	hasMore := offset+len(items) < total
 	meta := h.listMeta(info, "favorites")
 	meta.Limit = intPtr(limit)
 	meta.Offset = intPtr(offset)
-	meta.Returned = len(items)
-	meta.Total = &total
-	meta.HasMore = &hasMore
-	meta.NextURL = nextOffsetURL(r, limit, offset, hasMore)
-	writeJSON(w, http.StatusOK, ItemsResponse[favorites.Item]{Meta: meta, Items: items})
+	meta.Returned = len(result.Items)
+	meta.Total = &result.Total
+	meta.HasMore = &result.HasMore
+	meta.NextURL = nextOffsetURL(r, limit, offset, result.HasMore)
+	writeJSON(w, http.StatusOK, ItemsResponse[favorites.Item]{Meta: meta, Items: result.Items})
 }
 
 func (h *handler) handleArticleAccounts(w http.ResponseWriter, r *http.Request) {
@@ -784,21 +617,23 @@ func (h *handler) handleArticleAccounts(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "use GET")
 		return
 	}
-	_, cachePath, info, err := h.contactCache(r.Context())
+	_, _, info, err := h.resolveAccount(r.Context(), false)
 	if err != nil {
-		writeQueryError(w, "contact_cache_failed", err)
+		writeError(w, http.StatusInternalServerError, "account_discovery_failed", err.Error())
 		return
 	}
-	items, err := articles.NewService(cachePath, nil).Accounts(r.Context(), r.URL.Query().Get("query"))
+	result, err := h.queryRuntime().ArticleAccounts(r.Context(), wxquery.ArticleAccountsRequest{
+		Query:     r.URL.Query().Get("query"),
+		CacheMode: wxquery.CacheMode{ReadOnly: true},
+	})
 	if err != nil {
 		writeQueryError(w, "article_accounts_query_failed", err)
 		return
 	}
-	total := len(items)
 	meta := h.listMeta(info, "articles.accounts")
-	meta.Returned = len(items)
-	meta.Total = &total
-	writeJSON(w, http.StatusOK, ItemsResponse[articles.Account]{Meta: meta, Items: items})
+	meta.Returned = len(result.Items)
+	meta.Total = &result.Total
+	writeJSON(w, http.StatusOK, ItemsResponse[articles.Account]{Meta: meta, Items: result.Items})
 }
 
 func (h *handler) handleArticles(w http.ResponseWriter, r *http.Request) {
@@ -817,58 +652,39 @@ func (h *handler) handleArticles(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_offset", err.Error())
 		return
 	}
-	start, end, hasStart, hasEnd, err := parseMessageRange(q.Get("date"), q.Get("start"), q.Get("end"))
+	_, _, info, err := h.resolveAccount(r.Context(), false)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_time_range", err.Error())
+		writeError(w, http.StatusInternalServerError, "account_discovery_failed", err.Error())
 		return
 	}
-	_, contactPath, info, err := h.contactCache(r.Context())
-	if err != nil {
-		writeQueryError(w, "contact_cache_failed", err)
-		return
-	}
-	messagePaths, err := articleCachePathsReadOnly()
-	if err != nil {
-		writeQueryError(w, "article_cache_failed", err)
-		return
-	}
-	service := articles.NewService(contactPath, messagePaths)
-	baseOpts := articles.QueryOptions{
-		Username: strings.TrimSpace(q.Get("username")),
-		Query:    strings.TrimSpace(q.Get("query")),
-		Start:    start,
-		End:      end,
-		HasStart: hasStart,
-		HasEnd:   hasEnd,
-	}
-	totalItems, err := service.List(r.Context(), baseOpts)
+	result, err := h.queryRuntime().Articles(r.Context(), wxquery.ArticlesRequest{
+		Username:  strings.TrimSpace(q.Get("username")),
+		Query:     strings.TrimSpace(q.Get("query")),
+		Date:      q.Get("date"),
+		StartText: q.Get("start"),
+		EndText:   q.Get("end"),
+		Limit:     limit,
+		Offset:    offset,
+		WantTotal: true,
+		CacheMode: wxquery.CacheMode{ReadOnly: true},
+	})
 	if err != nil {
 		writeQueryError(w, "articles_query_failed", err)
 		return
 	}
-	pageOpts := baseOpts
-	pageOpts.Limit = limit
-	pageOpts.Offset = offset
-	items, err := service.List(r.Context(), pageOpts)
-	if err != nil {
-		writeQueryError(w, "articles_query_failed", err)
-		return
-	}
-	total := len(totalItems)
-	hasMore := offset+len(items) < total
 	meta := h.listMeta(info, "articles")
-	meta.Timezone = localTimezoneName()
+	meta.Timezone = wxquery.LocalTimezoneName()
 	meta.Limit = intPtr(limit)
 	meta.Offset = intPtr(offset)
-	meta.Returned = len(items)
-	meta.Total = &total
-	meta.HasMore = &hasMore
-	meta.NextURL = nextOffsetURL(r, limit, offset, hasMore)
+	meta.Returned = len(result.Items)
+	meta.Total = &result.Total
+	meta.HasMore = &result.HasMore
+	meta.NextURL = nextOffsetURL(r, limit, offset, result.HasMore)
 	meta.Username = strings.TrimSpace(q.Get("username"))
 	meta.Query = strings.TrimSpace(q.Get("query"))
-	meta.Start = formatMetaTime(start, hasStart)
-	meta.End = formatMetaTime(end, hasEnd)
-	writeJSON(w, http.StatusOK, ItemsResponse[articles.Article]{Meta: meta, Items: items})
+	meta.Start = wxquery.FormatMetaTime(result.Range.Start, result.Range.HasStart)
+	meta.End = wxquery.FormatMetaTime(result.Range.End, result.Range.HasEnd)
+	writeJSON(w, http.StatusOK, ItemsResponse[articles.Article]{Meta: meta, Items: result.Items})
 }
 
 func (h *handler) handleSNSFeed(w http.ResponseWriter, r *http.Request) {
@@ -887,62 +703,44 @@ func (h *handler) handleSNSFeed(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_offset", err.Error())
 		return
 	}
-	start, end, hasStart, hasEnd, err := parseMessageRange(q.Get("date"), q.Get("start"), q.Get("end"))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_time_range", err.Error())
-		return
-	}
 	_, _, info, err := h.resolveAccount(r.Context(), false)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "account_discovery_failed", err.Error())
 		return
 	}
-	cachePath, err := snsCachePathReadOnly()
-	if err != nil {
-		writeQueryError(w, "sns_cache_failed", err)
-		return
-	}
 	query := strings.TrimSpace(q.Get("query"))
-	baseOpts := sns.QueryOptions{
-		Username: strings.TrimSpace(q.Get("username")),
-		Query:    query,
-		Start:    start,
-		End:      end,
-		HasStart: hasStart,
-		HasEnd:   hasEnd,
-	}
-	totalItems, err := sns.NewService(cachePath).Feed(r.Context(), baseOpts)
+	result, err := h.queryRuntime().SNSFeed(r.Context(), wxquery.SNSFeedRequest{
+		Username:  strings.TrimSpace(q.Get("username")),
+		Query:     query,
+		Date:      q.Get("date"),
+		StartText: q.Get("start"),
+		EndText:   q.Get("end"),
+		Limit:     limit,
+		Offset:    offset,
+		WantTotal: true,
+		CacheMode: wxquery.CacheMode{ReadOnly: true},
+	})
 	if err != nil {
 		writeQueryError(w, "sns_feed_query_failed", err)
 		return
 	}
-	pageOpts := baseOpts
-	pageOpts.Limit = limit
-	pageOpts.Offset = offset
-	items, err := sns.NewService(cachePath).Feed(r.Context(), pageOpts)
-	if err != nil {
-		writeQueryError(w, "sns_feed_query_failed", err)
-		return
-	}
-	total := len(totalItems)
-	hasMore := offset+len(items) < total
 	resource := "sns.feed"
 	if r.URL.Path == "/v1/sns/search" {
 		resource = "sns.search"
 	}
 	meta := h.listMeta(info, resource)
-	meta.Timezone = localTimezoneName()
+	meta.Timezone = wxquery.LocalTimezoneName()
 	meta.Limit = intPtr(limit)
 	meta.Offset = intPtr(offset)
-	meta.Returned = len(items)
-	meta.Total = &total
-	meta.HasMore = &hasMore
-	meta.NextURL = nextOffsetURL(r, limit, offset, hasMore)
+	meta.Returned = len(result.Items)
+	meta.Total = &result.Total
+	meta.HasMore = &result.HasMore
+	meta.NextURL = nextOffsetURL(r, limit, offset, result.HasMore)
 	meta.Username = strings.TrimSpace(q.Get("username"))
 	meta.Query = query
-	meta.Start = formatMetaTime(start, hasStart)
-	meta.End = formatMetaTime(end, hasEnd)
-	writeJSON(w, http.StatusOK, ItemsResponse[sns.Post]{Meta: meta, Items: items})
+	meta.Start = wxquery.FormatMetaTime(result.Range.Start, result.Range.HasStart)
+	meta.End = wxquery.FormatMetaTime(result.Range.End, result.Range.HasEnd)
+	writeJSON(w, http.StatusOK, ItemsResponse[sns.Post]{Meta: meta, Items: result.Items})
 }
 
 func (h *handler) handleSNSNotifications(w http.ResponseWriter, r *http.Request) {
@@ -966,46 +764,34 @@ func (h *handler) handleSNSNotifications(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, "invalid_include_read", err.Error())
 		return
 	}
-	start, end, hasStart, hasEnd, err := parseMessageRange(q.Get("date"), q.Get("start"), q.Get("end"))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_time_range", err.Error())
-		return
-	}
 	_, _, info, err := h.resolveAccount(r.Context(), false)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "account_discovery_failed", err.Error())
 		return
 	}
-	cachePath, err := snsCachePathReadOnly()
-	if err != nil {
-		writeQueryError(w, "sns_cache_failed", err)
-		return
-	}
-	baseOpts := sns.QueryOptions{Start: start, End: end, HasStart: hasStart, HasEnd: hasEnd, IncludeRead: includeRead}
-	totalItems, err := sns.NewService(cachePath).Notifications(r.Context(), baseOpts)
-	if err != nil {
-		writeQueryError(w, "sns_notifications_query_failed", err)
-		return
-	}
-	pageOpts := baseOpts
-	pageOpts.Limit = limit
-	pageOpts.Offset = offset
-	items, err := sns.NewService(cachePath).Notifications(r.Context(), pageOpts)
+	result, err := h.queryRuntime().SNSNotifications(r.Context(), wxquery.SNSNotificationsRequest{
+		Date:        q.Get("date"),
+		StartText:   q.Get("start"),
+		EndText:     q.Get("end"),
+		Limit:       limit,
+		Offset:      offset,
+		IncludeRead: includeRead,
+		WantTotal:   true,
+		CacheMode:   wxquery.CacheMode{ReadOnly: true},
+	})
 	if err != nil {
 		writeQueryError(w, "sns_notifications_query_failed", err)
 		return
 	}
-	total := len(totalItems)
-	hasMore := offset+len(items) < total
 	meta := h.listMeta(info, "sns.notifications")
-	meta.Timezone = localTimezoneName()
+	meta.Timezone = wxquery.LocalTimezoneName()
 	meta.Limit = intPtr(limit)
 	meta.Offset = intPtr(offset)
-	meta.Returned = len(items)
-	meta.Total = &total
-	meta.HasMore = &hasMore
-	meta.NextURL = nextOffsetURL(r, limit, offset, hasMore)
-	meta.Start = formatMetaTime(start, hasStart)
-	meta.End = formatMetaTime(end, hasEnd)
-	writeJSON(w, http.StatusOK, ItemsResponse[sns.Notification]{Meta: meta, Items: items})
+	meta.Returned = len(result.Items)
+	meta.Total = &result.Total
+	meta.HasMore = &result.HasMore
+	meta.NextURL = nextOffsetURL(r, limit, offset, result.HasMore)
+	meta.Start = wxquery.FormatMetaTime(result.Range.Start, result.Range.HasStart)
+	meta.End = wxquery.FormatMetaTime(result.Range.End, result.Range.HasEnd)
+	writeJSON(w, http.StatusOK, ItemsResponse[sns.Notification]{Meta: meta, Items: result.Items})
 }

@@ -75,6 +75,12 @@ paths automatically when the supporting caches are available.
   `/v1/messages`, `/v1/search`, `/v1/timeline`, `/v1/new-messages`,
   `/v1/favorites`, `/v1/articles/accounts`, `/v1/articles`, `/v1/sns/feed`,
   `/v1/sns/search`, and `/v1/sns/notifications`, plus the POST actions above.
+- CLI and WebAPI query paths should share `internal/query` use-case logic.
+  `cmd/wxview` owns flags, help, CLI JSON/table/csv/jsonl formatting, and
+  `internal/webapi` owns HTTP params, HTTP meta/envelopes, and error responses.
+  Do not duplicate time parsing, index fallback, chat metadata enrichment,
+  media enrichment, new-message checkpoint, or daemon-first refresh fallback
+  in either presentation layer.
 - `wxview messages` requires `--username`; without args it must show the same
   help as `wxview messages --help`. It supports `--format table|json|jsonl|csv`,
   `--date`, `--start`, `--end`, `--after-seq`, `--limit`, `--offset`,

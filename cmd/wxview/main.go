@@ -27,12 +27,11 @@ import (
 	"wxview/internal/favorites"
 	"wxview/internal/identity"
 	"wxview/internal/key"
-	"wxview/internal/media"
 	"wxview/internal/messages"
 	"wxview/internal/msgindex"
+	wxquery "wxview/internal/query"
 	"wxview/internal/sessions"
 	"wxview/internal/sns"
-	"wxview/internal/timeline"
 	"wxview/internal/webapi"
 )
 
@@ -2218,35 +2217,22 @@ func runContacts(ctx context.Context, args []string, stdout io.Writer) error {
 		return fmt.Errorf("invalid offset %d: must be >= 0", *offset)
 	}
 
-	cachePath, err := contactCachePath(ctx, *refresh)
-	if err != nil {
-		return err
-	}
+	rt := wxquery.NewRuntime()
 	if *detail {
 		if strings.TrimSpace(*username) == "" {
 			return fmt.Errorf("--detail requires --username")
 		}
-		item, err := contacts.NewService(cachePath).Detail(ctx, *username)
+		result, err := rt.ContactDetail(ctx, wxquery.ContactDetailRequest{
+			Username:      *username,
+			ResolveAvatar: true,
+			CacheMode:     wxquery.CacheMode{Refresh: *refresh},
+		})
 		if err != nil {
 			return err
 		}
-		if headPath, ok := headImageCachePath(ctx, *refresh); ok {
-			if target, _, ok := key.HasContactCache(); ok {
-				if cacheDir, err := media.MediaCacheDir(target.Account); err == nil {
-					avatar := media.ResolveAvatar(headPath, item.Username, cacheDir)
-					item.AvatarStatus = avatar.Status
-					item.AvatarPath = avatar.Path
-					item.AvatarReason = avatar.Reason
-				}
-			}
-		}
-		return writeContactDetail(stdout, item, *format)
+		return writeContactDetail(stdout, result.Item, *format)
 	}
-	list, err := contacts.NewService(cachePath).List(ctx)
-	if err != nil {
-		return err
-	}
-	opts := contacts.QueryOptions{
+	req := wxquery.ContactsRequest{
 		Kind:     *kind,
 		Query:    *query,
 		Username: *username,
@@ -2255,13 +2241,18 @@ func runContacts(ctx context.Context, args []string, stdout io.Writer) error {
 		Offset:   *offset,
 	}
 	if *countOnly {
-		opts.Limit = 0
-		opts.Offset = 0
-		list = contacts.ApplyQueryOptions(list, opts)
-		return writeCount(stdout, len(list), *format)
+		req.Limit = 0
+		req.Offset = 0
 	}
-	list = contacts.ApplyQueryOptions(list, opts)
-	return writeContacts(stdout, list, *format)
+	req.CacheMode = wxquery.CacheMode{Refresh: *refresh}
+	result, err := rt.Contacts(ctx, req)
+	if err != nil {
+		return err
+	}
+	if *countOnly {
+		return writeCount(stdout, result.Total, *format)
+	}
+	return writeContacts(stdout, result.Items, *format)
 }
 
 func runMembers(ctx context.Context, args []string, stdout io.Writer) error {
@@ -2292,26 +2283,15 @@ func runMembers(ctx context.Context, args []string, stdout io.Writer) error {
 	if usernameValue != "" && queryValue != "" {
 		return fmt.Errorf("--username cannot be combined with --query")
 	}
-	cachePath, err := contactCachePath(ctx, *refresh)
+	result, err := wxquery.NewRuntime().Members(ctx, wxquery.MembersRequest{
+		Username:  usernameValue,
+		Query:     queryValue,
+		CacheMode: wxquery.CacheMode{Refresh: *refresh},
+	})
 	if err != nil {
 		return err
 	}
-	if queryValue != "" {
-		list, err := contacts.NewService(cachePath).List(ctx)
-		if err != nil {
-			return err
-		}
-		matched := contacts.ApplyQueryOptions(list, contacts.QueryOptions{Kind: contacts.KindChatroom, Query: queryValue})
-		if len(matched) != 1 {
-			return fmt.Errorf("--query matched %d chatrooms; use --username for an exact chatroom", len(matched))
-		}
-		usernameValue = matched[0].Username
-	}
-	result, err := contacts.NewService(cachePath).Members(ctx, usernameValue)
-	if err != nil {
-		return err
-	}
-	return writeGroupMembers(stdout, result, *format)
+	return writeGroupMembers(stdout, result.Group, *format)
 }
 
 func runSessions(ctx context.Context, args []string, stdout io.Writer) error {
@@ -2358,22 +2338,18 @@ func runSessionList(ctx context.Context, args []string, stdout io.Writer, unread
 	if *limit < 0 || *offset < 0 {
 		return fmt.Errorf("limit and offset must be >= 0")
 	}
-	cachePath, err := sessionCachePath(ctx, *refresh)
-	if err != nil {
-		return err
-	}
-	list, err := sessions.NewService(cachePath).List(ctx, sessions.QueryOptions{UnreadOnly: unreadOnly})
-	if err != nil {
-		return err
-	}
-	sessions.ApplyChatInfo(list, loadExistingChatInfoMap(ctx))
-	list = sessions.ApplyQueryOptions(list, sessions.QueryOptions{
-		Kind:   *kind,
-		Query:  *query,
-		Limit:  *limit,
-		Offset: *offset,
+	result, err := wxquery.NewRuntime().Sessions(ctx, wxquery.SessionsRequest{
+		Kind:       *kind,
+		Query:      *query,
+		UnreadOnly: unreadOnly,
+		Limit:      *limit,
+		Offset:     *offset,
+		CacheMode:  wxquery.CacheMode{Refresh: *refresh},
 	})
-	return writeSessions(stdout, list, *format)
+	if err != nil {
+		return err
+	}
+	return writeSessions(stdout, result.Items, *format)
 }
 
 func runNewMessages(ctx context.Context, args []string, stdout io.Writer) error {
@@ -2400,117 +2376,31 @@ func runNewMessages(ctx context.Context, args []string, stdout io.Writer) error 
 	if *limit < 0 {
 		return fmt.Errorf("invalid limit %d: must be >= 0", *limit)
 	}
-	target, sessionPath, err := sessionCacheTargetPath(ctx, *refresh)
-	if err != nil {
-		return err
-	}
-	statePath, err := newMessagesStatePath(target.Account)
-	if err != nil {
-		return err
-	}
-	state, loaded, err := loadNewMessagesState(statePath)
-	if err != nil {
-		return err
-	}
-	if *reset {
-		state = map[string]int64{}
-		loaded = false
-	}
-	fallback := time.Now().Add(-24 * time.Hour).Unix()
-	sessionList, err := sessions.NewService(sessionPath).List(ctx, sessions.QueryOptions{})
-	if err != nil {
-		return err
-	}
-	currentState := make(map[string]int64, len(sessionList))
-	changedSince := map[string]int64{}
-	for _, item := range sessionList {
-		if item.Username == "" || item.LastTimestamp <= 0 {
-			continue
-		}
-		currentState[item.Username] = item.LastTimestamp
-		since := fallback
-		if loaded {
-			if previous, ok := state[item.Username]; ok {
-				since = previous
-			}
-		}
-		if item.LastTimestamp > since {
-			changedSince[item.Username] = since
-		}
-	}
-
-	cachePaths, err := messageCachePaths(ctx, *refresh)
-	if err != nil {
-		return err
-	}
-	service := messages.NewService(cachePaths)
-	var list []messages.Message
-	for username, since := range changedSince {
-		rows, err := service.List(ctx, messages.QueryOptions{
-			Username:      username,
-			Start:         since + 1,
-			HasStart:      true,
-			IncludeSource: *includeSource,
-		})
-		if err != nil {
-			return err
-		}
-		list = append(list, rows...)
-	}
-	messages.ApplyChatInfo(list, loadExistingChatInfoMap(ctx))
-	sort.SliceStable(list, func(i, j int) bool {
-		if list[i].CreateTime != list[j].CreateTime {
-			return list[i].CreateTime < list[j].CreateTime
-		}
-		if list[i].Seq != list[j].Seq {
-			return list[i].Seq < list[j].Seq
-		}
-		return list[i].ID < list[j].ID
+	result, err := wxquery.NewRuntime().NewMessages(ctx, wxquery.NewMessagesRequest{
+		Limit:         *limit,
+		IncludeSource: *includeSource,
+		Commit:        true,
+		Reset:         *reset,
+		CacheMode:     wxquery.CacheMode{Refresh: *refresh},
 	})
-	page, _ := trimMessagePage(list, *limit)
-
-	newState := copyState(currentState)
-	for username, since := range changedSince {
-		newState[username] = since
-	}
-	for _, item := range page {
-		if item.ChatUsername == "" || item.CreateTime <= 0 {
-			continue
-		}
-		if item.CreateTime > newState[item.ChatUsername] {
-			newState[item.ChatUsername] = item.CreateTime
-		}
-	}
-	if err := saveNewMessagesState(statePath, newState); err != nil {
+	if err != nil {
 		return err
-	}
-	if len(page) > 0 {
-		target, err := key.DiscoverContactDB()
-		if err != nil {
-			return err
-		}
-		cacheDir, err := media.MediaCacheDir(target.Account)
-		if err != nil {
-			return err
-		}
-		resolver := newMediaResolver(target, cacheDir)
-		messages.EnrichMediaDetails(page, &resolver)
 	}
 	if *format == "json" {
 		meta := newMessagesMeta{
 			SchemaVersion: messageEnvelopeSchemaVersion,
-			Timezone:      localTimezoneName(),
+			Timezone:      wxquery.LocalTimezoneName(),
 			Mode:          "new_messages",
-			FirstRun:      !loaded,
+			FirstRun:      result.FirstRun,
 			Reset:         *reset,
 			Limit:         *limit,
-			Returned:      len(page),
-			ChangedChats:  len(changedSince),
-			StatePath:     statePath,
+			Returned:      len(result.Items),
+			ChangedChats:  result.ChangedChats,
+			StatePath:     result.StatePath,
 		}
-		return writeMessageEnvelope(stdout, meta, page)
+		return writeMessageEnvelope(stdout, meta, result.Items)
 	}
-	return writeMessages(stdout, page, *format, *includeSource)
+	return writeMessages(stdout, result.Items, *format, *includeSource)
 }
 
 func runMessages(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) error {
@@ -2556,86 +2446,53 @@ func runMessages(ctx context.Context, args []string, stdout io.Writer, stderr io
 	if *afterSeq < 0 {
 		return fmt.Errorf("invalid after-seq %d: must be >= 0", *afterSeq)
 	}
-	start, end, hasStart, hasEnd, err := parseMessageRange(*dateText, *startText, *endText)
+	rangeValue, err := wxquery.ParseMessageRange(*dateText, *startText, *endText, time.Now())
 	if err != nil {
 		return err
 	}
-	trace.Mark("parse_range", traceBool("has_start", hasStart), traceBool("has_end", hasEnd))
-
-	queryLimit := *limit
-	if *format == "json" && *limit > 0 {
-		queryLimit = *limit + 1
-	}
-	cachePaths, err := messageCachePaths(ctx, *refresh)
-	if err != nil {
-		return err
-	}
-	trace.Mark("message_cache_paths", traceInt("cache_db_count", len(cachePaths)), traceBool("refresh", *refresh))
+	trace.Mark("parse_range", traceBool("has_start", rangeValue.HasStart), traceBool("has_end", rangeValue.HasEnd))
 	usernameValue := strings.TrimSpace(*username)
-	target, err := key.DiscoverContactDB()
-	if err != nil {
-		return err
-	}
-	trace.Mark("discover_account")
-	service := messages.NewService(cachePaths)
-	list, execution, err := listMessagesMaybeIndex(ctx, target.Account, cachePaths, service, !*noIndex, messages.QueryOptions{
+	result, err := wxquery.NewRuntime().Messages(ctx, wxquery.MessagesRequest{
 		Username:      usernameValue,
-		Start:         start,
-		End:           end,
 		AfterSeq:      *afterSeq,
-		HasStart:      hasStart,
-		HasEnd:        hasEnd,
-		HasAfterSeq:   *afterSeq > 0,
+		Date:          *dateText,
+		StartText:     *startText,
+		EndText:       *endText,
 		IncludeSource: *includeSource,
-		Limit:         queryLimit,
+		Limit:         *limit,
 		Offset:        *offset,
+		NoIndex:       *noIndex,
+		WantHasMore:   *format == "json",
+		CacheMode:     wxquery.CacheMode{Refresh: *refresh},
 	})
 	if err != nil {
 		return err
 	}
-	trace.Mark("query_rows", traceInt("rows", len(list)), "query_mode="+execution.QueryMode, "index_status="+execution.IndexStatus, "index_reason="+execution.IndexReason)
-	mediaRows, voiceRows := countPotentialMediaRows(list)
-	if mediaRows > 0 {
-		cacheDir, err := media.MediaCacheDir(target.Account)
-		if err != nil {
-			return err
-		}
-		trace.Mark("media_cache_dir")
-		resolver := newMediaResolver(target, cacheDir)
-		trace.Mark("media_resolver", traceInt("resource_dbs", len(resolver.ResourceDBs)))
-		messages.EnrichMediaDetails(list, &resolver)
-		trace.Mark("enrich_media", traceInt("media_rows", mediaRows), traceInt("voice_rows", voiceRows))
-	} else {
-		trace.Mark("enrich_media", "skipped=true", traceInt("media_rows", 0), traceInt("voice_rows", 0))
-	}
-	chatInfo := chatInfoMapForUsernames(ctx, usernameValue)
-	trace.Mark("chat_info", traceInt("matches", len(chatInfo)))
-	messages.ApplyChatInfo(list, chatInfo)
+	trace.Mark("query_rows", traceInt("rows", len(result.Items)), "query_mode="+result.Execution.QueryMode, "index_status="+result.Execution.IndexStatus, "index_reason="+result.Execution.IndexReason)
 	if *format == "json" {
-		page, hasMore := trimMessagePage(list, *limit)
 		meta := messagesMeta{
 			SchemaVersion:      messageEnvelopeSchemaVersion,
-			Timezone:           localTimezoneName(),
+			Timezone:           wxquery.LocalTimezoneName(),
 			Mode:               "messages",
-			queryExecutionMeta: execution,
+			queryExecutionMeta: result.Execution,
 			Username:           usernameValue,
-			Start:              formatMetaTime(start, hasStart),
-			End:                formatMetaTime(end, hasEnd),
+			Start:              wxquery.FormatMetaTime(result.Range.Start, result.Range.HasStart),
+			End:                wxquery.FormatMetaTime(result.Range.End, result.Range.HasEnd),
 			Limit:              *limit,
-			Returned:           len(page),
-			HasMore:            hasMore,
+			Returned:           len(result.Items),
+			HasMore:            result.HasMore,
 		}
-		if hasMore && len(page) > 0 {
-			meta.NextAfterSeq = page[len(page)-1].Seq
-			meta.NextArgs = buildMessagesNextArgs(usernameValue, start, hasStart, end, hasEnd, meta.NextAfterSeq, *limit, *includeSource, *noIndex)
+		if result.HasMore && result.NextAfterSeq > 0 {
+			meta.NextAfterSeq = result.NextAfterSeq
+			meta.NextArgs = buildMessagesNextArgs(usernameValue, result.Range.Start, result.Range.HasStart, result.Range.End, result.Range.HasEnd, meta.NextAfterSeq, *limit, *includeSource, *noIndex)
 		}
-		err := writeMessageEnvelope(stdout, meta, page)
-		trace.Mark("write_output", "format=json", traceInt("returned", len(page)))
+		err := writeMessageEnvelope(stdout, meta, result.Items)
+		trace.Mark("write_output", "format=json", traceInt("returned", len(result.Items)))
 		trace.Mark("total")
 		return err
 	}
-	err = writeMessages(stdout, list, *format, *includeSource)
-	trace.Mark("write_output", "format="+*format, traceInt("returned", len(list)))
+	err = writeMessages(stdout, result.Items, *format, *includeSource)
+	trace.Mark("write_output", "format="+*format, traceInt("returned", len(result.Items)))
 	trace.Mark("total")
 	return err
 }
@@ -2679,66 +2536,43 @@ func runSearch(ctx context.Context, args []string, stdout io.Writer) error {
 	if usernameValue != "" && chatQueryValue != "" {
 		return fmt.Errorf("--username cannot be combined with --chat-query")
 	}
-	start, end, hasStart, hasEnd, err := parseMessageRange(*dateText, *startText, *endText)
-	if err != nil {
-		return err
-	}
-	chats, matchedChats, err := selectSearchChats(ctx, usernameValue, *kind, chatQueryValue, *refresh)
-	if err != nil {
-		return err
-	}
-	cachePaths, err := messageCachePaths(ctx, *refresh)
-	if err != nil {
-		return err
-	}
-	service := messages.NewService(cachePaths)
-	target, err := key.DiscoverContactDB()
-	if err != nil {
-		return err
-	}
-	list, total, err := service.Search(ctx, messages.SearchOptions{
-		Chats:         chats,
+	result, err := wxquery.NewRuntime().Search(ctx, wxquery.SearchRequest{
 		Query:         strings.TrimSpace(*query),
-		Start:         start,
-		End:           end,
-		HasStart:      hasStart,
-		HasEnd:        hasEnd,
+		Kind:          *kind,
+		ChatQuery:     chatQueryValue,
+		Username:      usernameValue,
+		Date:          *dateText,
+		StartText:     *startText,
+		EndText:       *endText,
 		IncludeSource: *includeSource,
 		Limit:         *limit,
 		Offset:        *offset,
+		CacheMode:     wxquery.CacheMode{Refresh: *refresh},
 	})
 	if err != nil {
 		return err
 	}
-	if len(list) > 0 {
-		cacheDir, err := media.MediaCacheDir(target.Account)
-		if err != nil {
-			return err
-		}
-		resolver := newMediaResolver(target, cacheDir)
-		messages.EnrichMediaDetails(list, &resolver)
-	}
 	if *format == "json" {
 		meta := searchMeta{
 			SchemaVersion:      messageEnvelopeSchemaVersion,
-			Timezone:           localTimezoneName(),
+			Timezone:           wxquery.LocalTimezoneName(),
 			Mode:               "search",
-			queryExecutionMeta: scanExecution("index_not_supported_for_search"),
+			queryExecutionMeta: result.Execution,
 			Query:              strings.TrimSpace(*query),
 			Kind:               *kind,
 			ChatQuery:          chatQueryValue,
 			Username:           usernameValue,
-			Start:              formatMetaTime(start, hasStart),
-			End:                formatMetaTime(end, hasEnd),
+			Start:              wxquery.FormatMetaTime(result.Range.Start, result.Range.HasStart),
+			End:                wxquery.FormatMetaTime(result.Range.End, result.Range.HasEnd),
 			Limit:              *limit,
 			Offset:             *offset,
-			Returned:           len(list),
-			TotalMatches:       total,
-			MatchedChats:       matchedChats,
+			Returned:           len(result.Items),
+			TotalMatches:       result.TotalMatches,
+			MatchedChats:       result.MatchedChats,
 		}
-		return writeMessageEnvelope(stdout, meta, list)
+		return writeMessageEnvelope(stdout, meta, result.Items)
 	}
-	return writeMessages(stdout, list, *format, *includeSource)
+	return writeMessages(stdout, result.Items, *format, *includeSource)
 }
 
 func runTimeline(ctx context.Context, args []string, stdout io.Writer) error {
@@ -2787,69 +2621,37 @@ func runTimeline(ctx context.Context, args []string, stdout io.Writer) error {
 	if usernameValue == "" && !kindProvided && queryValue == "" {
 		return fmt.Errorf("timeline requires --username, --kind, or --query")
 	}
-	start, end, startLabel, endLabel, err := parseTimelineRange(*dateText, *startText, *endText)
-	if err != nil {
-		return err
-	}
-
-	chats, matchedChats, err := selectTimelineChats(ctx, usernameValue, *kind, queryValue, kindProvided, *refresh)
-	if err != nil {
-		return err
-	}
-	cachePaths, err := messageCachePaths(ctx, *refresh)
-	if err != nil {
-		return err
-	}
-	target, err := key.DiscoverContactDB()
-	if err != nil {
-		return err
-	}
-	cacheDir, err := media.MediaCacheDir(target.Account)
-	if err != nil {
-		return err
-	}
-	queryIdentity := timeline.QueryIdentity{
-		Username: usernameValue,
-		Start:    start,
-		End:      end,
-	}
-	if usernameValue == "" {
-		queryIdentity.Kind = *kind
-		queryIdentity.Query = queryValue
-	}
-	queryHash, err := timeline.QueryHash(queryIdentity)
-	if err != nil {
-		return err
-	}
-	service := messages.NewService(cachePaths)
-	result, execution, err := timelineMaybeIndex(ctx, target.Account, cachePaths, service, !*noIndex, timeline.QueryOptions{
-		Chats:         chats,
-		Start:         start,
-		End:           end,
+	result, err := wxquery.NewRuntime().Timeline(ctx, wxquery.TimelineRequest{
+		Username:      usernameValue,
+		Kind:          *kind,
+		KindProvided:  kindProvided,
+		Query:         queryValue,
+		Date:          *dateText,
+		StartText:     *startText,
+		EndText:       *endText,
 		Limit:         *limit,
 		Cursor:        *cursor,
-		QueryHash:     queryHash,
 		IncludeSource: *includeSource,
+		NoIndex:       *noIndex,
+		CacheMode:     wxquery.CacheMode{Refresh: *refresh},
 	})
 	if err != nil {
 		return err
 	}
-	resolver := newMediaResolver(target, cacheDir)
-	messages.EnrichMediaDetails(result.Items, &resolver)
 	if *format == "json" {
 		meta := timelineMeta{
 			SchemaVersion:      messageEnvelopeSchemaVersion,
-			Timezone:           localTimezoneName(),
+			Timezone:           wxquery.LocalTimezoneName(),
 			Mode:               "timeline",
-			queryExecutionMeta: execution,
+			queryExecutionMeta: result.Execution,
 			Kind:               "",
 			Query:              "",
 			Username:           usernameValue,
-			Start:              startLabel,
-			End:                endLabel,
+			Start:              result.Range.StartLabel,
+			End:                result.Range.EndLabel,
 			Limit:              *limit,
 			Returned:           len(result.Items),
-			MatchedChats:       matchedChats,
+			MatchedChats:       result.MatchedChats,
 			HasMore:            result.HasMore,
 		}
 		if usernameValue == "" {
@@ -2858,7 +2660,7 @@ func runTimeline(ctx context.Context, args []string, stdout io.Writer) error {
 		}
 		if result.HasMore {
 			meta.NextCursor = result.NextCursor
-			meta.NextArgs = buildTimelineNextArgs(usernameValue, *kind, queryValue, startLabel, endLabel, *limit, result.NextCursor, *includeSource, *noIndex)
+			meta.NextArgs = buildTimelineNextArgs(usernameValue, *kind, queryValue, result.Range.StartLabel, result.Range.EndLabel, *limit, result.NextCursor, *includeSource, *noIndex)
 		}
 		return writeMessageEnvelope(stdout, meta, result.Items)
 	}
@@ -2887,20 +2689,17 @@ func runFavorites(ctx context.Context, args []string, stdout io.Writer) error {
 	if *limit < 0 || *offset < 0 {
 		return fmt.Errorf("limit and offset must be >= 0")
 	}
-	target, cachePath, err := favoriteCacheTargetPath(ctx, *refresh)
-	if err != nil {
-		return err
-	}
-	items, err := favorites.NewServiceWithDataDir(cachePath, target.DataDir).List(ctx, favorites.QueryOptions{
-		Type:   *favType,
-		Query:  *query,
-		Limit:  *limit,
-		Offset: *offset,
+	result, err := wxquery.NewRuntime().Favorites(ctx, wxquery.FavoritesRequest{
+		Type:      *favType,
+		Query:     *query,
+		Limit:     *limit,
+		Offset:    *offset,
+		CacheMode: wxquery.CacheMode{Refresh: *refresh},
 	})
 	if err != nil {
 		return err
 	}
-	return writeFavorites(stdout, items, *format)
+	return writeFavorites(stdout, result.Items, *format)
 }
 
 func runArticles(ctx context.Context, args []string, stdout io.Writer) error {
@@ -2929,41 +2728,31 @@ func runArticles(ctx context.Context, args []string, stdout io.Writer) error {
 	if *limit < 0 || *offset < 0 {
 		return fmt.Errorf("limit and offset must be >= 0")
 	}
-	start, end, hasStart, hasEnd, err := parseMessageRange(*dateText, *startText, *endText)
-	if err != nil {
-		return err
-	}
-	contactPath, err := contactCachePath(ctx, *refresh)
-	if err != nil {
-		return err
-	}
-	service := articles.NewService(contactPath, nil)
+	rt := wxquery.NewRuntime()
 	if *listAccounts {
-		accounts, err := service.Accounts(ctx, *query)
+		result, err := rt.ArticleAccounts(ctx, wxquery.ArticleAccountsRequest{
+			Query:     *query,
+			CacheMode: wxquery.CacheMode{Refresh: *refresh},
+		})
 		if err != nil {
 			return err
 		}
-		return writeArticleAccounts(stdout, accounts, *format)
+		return writeArticleAccounts(stdout, result.Items, *format)
 	}
-	messagePaths, err := articleCachePaths(ctx, *refresh)
-	if err != nil {
-		return err
-	}
-	service = articles.NewService(contactPath, messagePaths)
-	items, err := service.List(ctx, articles.QueryOptions{
-		Username: strings.TrimSpace(*username),
-		Query:    strings.TrimSpace(*query),
-		Start:    start,
-		End:      end,
-		HasStart: hasStart,
-		HasEnd:   hasEnd,
-		Limit:    *limit,
-		Offset:   *offset,
+	result, err := rt.Articles(ctx, wxquery.ArticlesRequest{
+		Username:  strings.TrimSpace(*username),
+		Query:     strings.TrimSpace(*query),
+		Date:      *dateText,
+		StartText: *startText,
+		EndText:   *endText,
+		Limit:     *limit,
+		Offset:    *offset,
+		CacheMode: wxquery.CacheMode{Refresh: *refresh},
 	})
 	if err != nil {
 		return err
 	}
-	return writeArticles(stdout, items, *format)
+	return writeArticles(stdout, result.Items, *format)
 }
 
 func runSNS(ctx context.Context, args []string, stdout io.Writer) error {
@@ -3010,28 +2799,20 @@ func runSNSFeed(ctx context.Context, args []string, stdout io.Writer, positional
 	if *limit < 0 || *offset < 0 {
 		return fmt.Errorf("limit and offset must be >= 0")
 	}
-	start, end, hasStart, hasEnd, err := parseMessageRange(*dateText, *startText, *endText)
-	if err != nil {
-		return err
-	}
-	cachePath, err := snsCachePath(ctx, *refresh)
-	if err != nil {
-		return err
-	}
-	items, err := sns.NewService(cachePath).Feed(ctx, sns.QueryOptions{
-		Username: strings.TrimSpace(*username),
-		Query:    strings.TrimSpace(*query),
-		Start:    start,
-		End:      end,
-		HasStart: hasStart,
-		HasEnd:   hasEnd,
-		Limit:    *limit,
-		Offset:   *offset,
+	result, err := wxquery.NewRuntime().SNSFeed(ctx, wxquery.SNSFeedRequest{
+		Username:  strings.TrimSpace(*username),
+		Query:     strings.TrimSpace(*query),
+		Date:      *dateText,
+		StartText: *startText,
+		EndText:   *endText,
+		Limit:     *limit,
+		Offset:    *offset,
+		CacheMode: wxquery.CacheMode{Refresh: *refresh},
 	})
 	if err != nil {
 		return err
 	}
-	return writeSNSPosts(stdout, items, *format)
+	return writeSNSPosts(stdout, result.Items, *format)
 }
 
 func runSNSNotifications(ctx context.Context, args []string, stdout io.Writer) error {
@@ -3054,27 +2835,19 @@ func runSNSNotifications(ctx context.Context, args []string, stdout io.Writer) e
 	if *limit < 0 || *offset < 0 {
 		return fmt.Errorf("limit and offset must be >= 0")
 	}
-	start, end, hasStart, hasEnd, err := parseMessageRange(*dateText, *startText, *endText)
-	if err != nil {
-		return err
-	}
-	cachePath, err := snsCachePath(ctx, *refresh)
-	if err != nil {
-		return err
-	}
-	items, err := sns.NewService(cachePath).Notifications(ctx, sns.QueryOptions{
-		Start:       start,
-		End:         end,
-		HasStart:    hasStart,
-		HasEnd:      hasEnd,
+	result, err := wxquery.NewRuntime().SNSNotifications(ctx, wxquery.SNSNotificationsRequest{
+		Date:        *dateText,
+		StartText:   *startText,
+		EndText:     *endText,
 		Limit:       *limit,
 		Offset:      *offset,
 		IncludeRead: *includeRead,
+		CacheMode:   wxquery.CacheMode{Refresh: *refresh},
 	})
 	if err != nil {
 		return err
 	}
-	return writeSNSNotifications(stdout, items, *format)
+	return writeSNSNotifications(stdout, result.Items, *format)
 }
 
 type messagesMeta struct {
@@ -3128,13 +2901,7 @@ type searchMeta struct {
 	MatchedChats int    `json:"matched_chats"`
 }
 
-type queryExecutionMeta struct {
-	QueryMode       string `json:"query_mode,omitempty"`
-	IndexUsed       bool   `json:"index_used"`
-	IndexStatus     string `json:"index_status,omitempty"`
-	IndexReason     string `json:"index_reason,omitempty"`
-	IndexLagSeconds int64  `json:"index_lag_seconds,omitempty"`
-}
+type queryExecutionMeta = wxquery.ExecutionMeta
 
 type newMessagesMeta struct {
 	SchemaVersion int    `json:"schema_version"`
@@ -3151,407 +2918,6 @@ type newMessagesMeta struct {
 type messageEnvelope struct {
 	Meta  any                `json:"meta"`
 	Items []messages.Message `json:"items"`
-}
-
-func listMessagesMaybeIndex(ctx context.Context, account string, cachePaths []string, service messages.Service, useIndex bool, opts messages.QueryOptions) ([]messages.Message, queryExecutionMeta, error) {
-	if !useIndex {
-		list, err := service.List(ctx, opts)
-		return list, scanExecution("index_disabled_by_flag"), err
-	}
-	indexPath, usability, ok := queryIndexUsability(ctx, account, cachePaths, msgindex.UsabilityOptions{
-		Username: opts.Username,
-		Start:    opts.Start,
-		End:      opts.End,
-		HasStart: opts.HasStart,
-		HasEnd:   opts.HasEnd,
-	})
-	if ok {
-		refs, err := msgindex.MessageRefs(ctx, indexPath, msgindex.MessageQuery{
-			Username:    opts.Username,
-			Start:       opts.Start,
-			End:         opts.End,
-			AfterSeq:    opts.AfterSeq,
-			HasStart:    opts.HasStart,
-			HasEnd:      opts.HasEnd,
-			HasAfterSeq: opts.HasAfterSeq,
-			Limit:       opts.Limit,
-			Offset:      opts.Offset,
-		})
-		if err == nil {
-			list, err := service.ListByRefs(ctx, refs, messages.RefQueryOptions{
-				IncludeSource: opts.IncludeSource,
-				MediaResolver: opts.MediaResolver,
-			})
-			if err == nil {
-				return list, indexExecution(usability), nil
-			}
-		}
-	}
-	list, err := service.List(ctx, opts)
-	return list, scanExecutionFromUsability(usability), err
-}
-
-func timelineMaybeIndex(ctx context.Context, account string, cachePaths []string, service messages.Service, useIndex bool, opts timeline.QueryOptions) (timeline.Result, queryExecutionMeta, error) {
-	if !useIndex {
-		result, err := timeline.List(ctx, service, opts)
-		return result, scanExecution("index_disabled_by_flag"), err
-	}
-	indexPath, usability, ok := queryIndexUsability(ctx, account, cachePaths, msgindex.UsabilityOptions{
-		Chats:    opts.Chats,
-		Start:    opts.Start,
-		End:      opts.End,
-		HasStart: true,
-		HasEnd:   true,
-	})
-	if ok {
-		var after timeline.SortKey
-		hasAfter := false
-		if strings.TrimSpace(opts.Cursor) != "" {
-			var err error
-			after, err = timeline.DecodeCursor(opts.Cursor, opts.QueryHash)
-			if err != nil {
-				return timeline.Result{}, scanExecutionFromUsability(usability), err
-			}
-			hasAfter = true
-		}
-		refs, err := msgindex.TimelineRefs(ctx, indexPath, msgindex.TimelineQuery{
-			Chats:    opts.Chats,
-			Start:    opts.Start,
-			End:      opts.End,
-			After:    after,
-			HasAfter: hasAfter,
-			Limit:    opts.Limit + 1,
-		})
-		if err == nil {
-			items, err := service.ListByRefs(ctx, refs, messages.RefQueryOptions{IncludeSource: opts.IncludeSource})
-			if err == nil {
-				chatInfo := make(map[string]messages.ChatInfo, len(opts.Chats))
-				for _, chat := range opts.Chats {
-					chatInfo[chat.Username] = chat
-				}
-				messages.ApplyChatInfo(items, chatInfo)
-				result := timeline.Result{Items: items}
-				if len(result.Items) > opts.Limit {
-					result.HasMore = true
-					result.Items = result.Items[:opts.Limit]
-				}
-				if result.HasMore && len(result.Items) > 0 {
-					next, err := timeline.EncodeCursor(opts.QueryHash, timeline.KeyFor(result.Items[len(result.Items)-1]))
-					if err != nil {
-						return timeline.Result{}, scanExecutionFromUsability(usability), err
-					}
-					result.NextCursor = next
-				}
-				return result, indexExecution(usability), nil
-			}
-		}
-	}
-	result, err := timeline.List(ctx, service, opts)
-	return result, scanExecutionFromUsability(usability), err
-}
-
-func usableIndexPath(ctx context.Context, account string, cachePaths []string, opts msgindex.UsabilityOptions) (string, bool) {
-	indexPath, _, ok := queryIndexUsability(ctx, account, cachePaths, opts)
-	return indexPath, ok
-}
-
-func queryIndexUsability(ctx context.Context, account string, cachePaths []string, opts msgindex.UsabilityOptions) (string, msgindex.Usability, bool) {
-	indexPath, err := msgindex.LocalPath(account)
-	if err != nil {
-		return "", msgindex.Usability{Reason: "index_path_error"}, false
-	}
-	if strings.TrimSpace(opts.SessionCachePath) == "" {
-		if sessionPath, err := key.SessionCachePath(account); err == nil {
-			if _, statErr := os.Stat(sessionPath); statErr == nil {
-				opts.SessionCachePath = sessionPath
-			}
-		}
-	}
-	usability, err := msgindex.UseForQuery(ctx, indexPath, cachePaths, opts)
-	if err != nil || !usability.UseIndex {
-		if err != nil && strings.TrimSpace(usability.Reason) == "" {
-			usability.Reason = "index_status_error"
-		}
-		return "", usability, false
-	}
-	return indexPath, usability, true
-}
-
-func indexExecution(usability msgindex.Usability) queryExecutionMeta {
-	return queryExecutionMeta{
-		QueryMode:       msgindex.QueryModeIndex,
-		IndexUsed:       true,
-		IndexStatus:     usability.Status.Status,
-		IndexReason:     firstNonEmptyString(usability.Reason, "index_usable"),
-		IndexLagSeconds: usability.Status.LagSeconds,
-	}
-}
-
-func scanExecution(reason string) queryExecutionMeta {
-	return queryExecutionMeta{
-		QueryMode:   msgindex.QueryModeScan,
-		IndexUsed:   false,
-		IndexReason: reason,
-	}
-}
-
-func scanExecutionFromUsability(usability msgindex.Usability) queryExecutionMeta {
-	meta := scanExecution(firstNonEmptyString(usability.Reason, "index_unusable"))
-	meta.IndexStatus = usability.Status.Status
-	meta.IndexLagSeconds = usability.Status.LagSeconds
-	return meta
-}
-
-func firstNonEmptyString(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return value
-		}
-	}
-	return ""
-}
-
-func selectSearchChats(ctx context.Context, username string, kind string, query string, refresh bool) ([]messages.ChatInfo, int, error) {
-	if username != "" {
-		if refresh {
-			if err := refreshContactCache(ctx); err != nil {
-				return nil, 0, err
-			}
-		}
-		info := chatInfoForUsername(ctx, username)
-		if strings.TrimSpace(info.Username) == "" {
-			info = messages.ChatInfo{Username: username, Kind: messages.ChatKindUnknown, DisplayName: username}
-		}
-		return []messages.ChatInfo{info}, 1, nil
-	}
-	list, err := listContacts(ctx, refresh)
-	if err != nil {
-		return nil, 0, err
-	}
-	selected := contacts.ApplyQueryOptions(list, contacts.QueryOptions{
-		Kind:  kind,
-		Query: query,
-		Sort:  "username",
-	})
-	chats := make([]messages.ChatInfo, 0, len(selected))
-	for _, contact := range selected {
-		chats = append(chats, chatInfoFromContact(contact))
-	}
-	return chats, len(chats), nil
-}
-
-func selectTimelineChats(ctx context.Context, username string, kind string, query string, kindProvided bool, refresh bool) ([]messages.ChatInfo, int, error) {
-	if username != "" {
-		if refresh {
-			if err := refreshContactCache(ctx); err != nil {
-				return nil, 0, err
-			}
-		}
-		info := chatInfoForUsername(ctx, username)
-		if strings.TrimSpace(info.Username) == "" {
-			info = messages.ChatInfo{Username: username, Kind: messages.ChatKindUnknown, DisplayName: username}
-		}
-		return []messages.ChatInfo{info}, 1, nil
-	}
-	list, err := listContacts(ctx, refresh)
-	if err != nil {
-		return nil, 0, err
-	}
-	opts := contacts.QueryOptions{
-		Kind:  kind,
-		Query: query,
-		Sort:  "username",
-	}
-	if !kindProvided && query != "" {
-		opts.Kind = contacts.KindAll
-	}
-	selected := contacts.ApplyQueryOptions(list, opts)
-	chats := make([]messages.ChatInfo, 0, len(selected))
-	for _, contact := range selected {
-		chats = append(chats, chatInfoFromContact(contact))
-	}
-	return chats, len(chats), nil
-}
-
-func loadExistingChatInfoMap(ctx context.Context) map[string]messages.ChatInfo {
-	_, path, ok := key.HasContactCache()
-	if !ok {
-		return nil
-	}
-	list, err := contacts.NewService(path).List(ctx)
-	if err != nil {
-		return nil
-	}
-	return chatInfoMapFromContacts(list)
-}
-
-func chatInfoForUsername(ctx context.Context, username string) messages.ChatInfo {
-	username = strings.TrimSpace(username)
-	if username == "" {
-		return messages.ChatInfo{}
-	}
-	_, path, ok := key.HasContactCache()
-	if !ok {
-		return messages.ChatInfo{Username: username, Kind: messages.ChatKindUnknown, DisplayName: username}
-	}
-	contact, found, err := contacts.NewService(path).Lookup(ctx, username)
-	if err != nil || !found {
-		return messages.ChatInfo{Username: username, Kind: messages.ChatKindUnknown, DisplayName: username}
-	}
-	return chatInfoFromContact(contact)
-}
-
-func chatInfoMapForUsernames(ctx context.Context, usernames ...string) map[string]messages.ChatInfo {
-	out := make(map[string]messages.ChatInfo, len(usernames))
-	for _, username := range usernames {
-		info := chatInfoForUsername(ctx, username)
-		if strings.TrimSpace(info.Username) != "" {
-			out[info.Username] = info
-		}
-	}
-	return out
-}
-
-func chatInfoMapFromContacts(list []contacts.Contact) map[string]messages.ChatInfo {
-	out := make(map[string]messages.ChatInfo, len(list))
-	for _, contact := range list {
-		out[contact.Username] = chatInfoFromContact(contact)
-	}
-	return out
-}
-
-func chatInfoFromContact(contact contacts.Contact) messages.ChatInfo {
-	return messages.ChatInfo{
-		Username:    contact.Username,
-		Kind:        contact.Kind,
-		DisplayName: contacts.DisplayName(contact),
-		Alias:       contact.Alias,
-		Remark:      contact.Remark,
-		NickName:    contact.NickName,
-	}
-}
-
-func listContacts(ctx context.Context, refresh bool) ([]contacts.Contact, error) {
-	cachePath, err := contactCachePath(ctx, refresh)
-	if err != nil {
-		return nil, err
-	}
-	return contacts.NewService(cachePath).List(ctx)
-}
-
-func contactCachePath(ctx context.Context, refresh bool) (string, error) {
-	if refresh {
-		if err := refreshContactCache(ctx); err != nil {
-			return "", err
-		}
-		if _, path, ok := key.HasContactCache(); ok {
-			return path, nil
-		}
-		return "", fmt.Errorf("contact cache was not found after refresh")
-	}
-
-	if _, path, ok := key.HasContactCache(); ok {
-		return path, nil
-	}
-	_, path, err := key.EnsureContactCache(ctx)
-	if err != nil {
-		return "", err
-	}
-	return path, nil
-}
-
-func refreshContactCache(ctx context.Context) error {
-	socketPath, err := app.SocketPath()
-	if err != nil {
-		return err
-	}
-	client := daemon.Client{SocketPath: socketPath, Timeout: 5 * time.Second}
-	if client.Healthy(ctx) {
-		_, err := client.Call(ctx, daemon.ActionRefreshContacts)
-		if err != nil {
-			return err
-		}
-		return nil
-	}
-	_, _, err = key.EnsureContactCache(ctx)
-	return err
-}
-
-func sessionCachePath(ctx context.Context, refresh bool) (string, error) {
-	_, path, err := sessionCacheTargetPath(ctx, refresh)
-	return path, err
-}
-
-func sessionCacheTargetPath(ctx context.Context, refresh bool) (key.TargetDB, string, error) {
-	if refresh {
-		return refreshSessionCache(ctx)
-	}
-	if target, path, ok := key.SessionCachePathIfExists(); ok {
-		return target, path, nil
-	}
-	res, path, err := key.EnsureSessionCache(ctx)
-	return res.Target, path, err
-}
-
-func refreshSessionCache(ctx context.Context) (key.TargetDB, string, error) {
-	socketPath, err := app.SocketPath()
-	if err != nil {
-		return key.TargetDB{}, "", err
-	}
-	client := daemon.Client{SocketPath: socketPath, Timeout: time.Minute}
-	if client.Healthy(ctx) {
-		if _, err := client.Call(ctx, daemon.ActionRefreshSessions); err != nil {
-			if !isUnknownDaemonAction(err) {
-				return key.TargetDB{}, "", err
-			}
-			res, path, err := key.EnsureSessionCache(ctx)
-			return res.Target, path, err
-		}
-		if target, path, ok := key.SessionCachePathIfExists(); ok {
-			return target, path, nil
-		}
-		return key.TargetDB{}, "", fmt.Errorf("session cache was not found after daemon refresh")
-	}
-	res, path, err := key.EnsureSessionCache(ctx)
-	return res.Target, path, err
-}
-
-func messageCachePaths(ctx context.Context, refresh bool) ([]string, error) {
-	if refresh {
-		if err := refreshMessageCaches(ctx); err != nil {
-			return nil, err
-		}
-		paths, allExist, err := key.MessageCachePaths()
-		if err != nil {
-			return nil, err
-		}
-		if allExist {
-			return paths, nil
-		}
-		return nil, fmt.Errorf("message cache was not found after refresh")
-	}
-	paths, allExist, err := key.MessageCachePaths()
-	if err != nil {
-		return nil, err
-	}
-	if allExist {
-		return paths, nil
-	}
-	return key.EnsureMessageCaches(ctx)
-}
-
-func refreshMessageCaches(ctx context.Context) error {
-	socketPath, err := app.SocketPath()
-	if err != nil {
-		return err
-	}
-	client := daemon.Client{SocketPath: socketPath, Timeout: time.Minute}
-	if client.Healthy(ctx) {
-		_, err := client.Call(ctx, daemon.ActionRefreshMessages)
-		return err
-	}
-	_, err = key.EnsureMessageRelatedCaches(ctx)
-	return err
 }
 
 func buildMessageIndex(ctx context.Context, refreshCaches bool, reset bool) (msgindex.BuildResult, error) {
@@ -3586,7 +2952,7 @@ func buildMessageIndex(ctx context.Context, refreshCaches bool, reset bool) (msg
 				return msgindex.BuildResult{Status: status}, nil
 			}
 		}
-		if err := refreshMessageCaches(ctx); err != nil {
+		if _, err := wxquery.NewRuntime().CacheRefresh(ctx, wxquery.RefreshRequest{Scope: "messages"}); err != nil {
 			return msgindex.BuildResult{}, err
 		}
 	}
@@ -3602,7 +2968,7 @@ func buildMessageIndex(ctx context.Context, refreshCaches bool, reset bool) (msg
 		return msgindex.BuildResult{}, fmt.Errorf("message cache does not exist: run `wxview init` or `wxview messages --refresh --username USERNAME` first")
 	}
 	sessionPath := ""
-	if _, path, err := sessionCacheTargetPath(ctx, refreshCaches); err == nil {
+	if _, path, err := wxquery.NewRuntime().SessionCacheTargetPath(ctx, wxquery.CacheMode{Refresh: refreshCaches}); err == nil {
 		sessionPath = path
 	}
 	opts := msgindex.BuildOptions{
@@ -3675,262 +3041,8 @@ func localMessageShardIndex(name string) (int, bool) {
 	return index, err == nil
 }
 
-func articleCachePaths(ctx context.Context, refresh bool) ([]string, error) {
-	if refresh {
-		if err := refreshMessageCaches(ctx); err != nil {
-			return nil, err
-		}
-	}
-	return key.ArticleCachePaths(ctx)
-}
-
-func favoriteCachePath(ctx context.Context, refresh bool) (string, error) {
-	_, path, err := favoriteCacheTargetPath(ctx, refresh)
-	return path, err
-}
-
-func favoriteCacheTargetPath(ctx context.Context, refresh bool) (key.TargetDB, string, error) {
-	if refresh {
-		return refreshFavoriteCache(ctx)
-	}
-	if target, path, ok := key.FavoriteCachePathIfExists(); ok {
-		return target, path, nil
-	}
-	res, path, err := key.EnsureFavoriteCache(ctx)
-	return res.Target, path, err
-}
-
-func refreshFavoriteCache(ctx context.Context) (key.TargetDB, string, error) {
-	socketPath, err := app.SocketPath()
-	if err != nil {
-		return key.TargetDB{}, "", err
-	}
-	client := daemon.Client{SocketPath: socketPath, Timeout: time.Minute}
-	if client.Healthy(ctx) {
-		if _, err := client.Call(ctx, daemon.ActionRefreshFavorites); err != nil {
-			if !isUnknownDaemonAction(err) {
-				return key.TargetDB{}, "", err
-			}
-			res, path, err := key.EnsureFavoriteCache(ctx)
-			return res.Target, path, err
-		}
-		if target, path, ok := key.FavoriteCachePathIfExists(); ok {
-			return target, path, nil
-		}
-		return key.TargetDB{}, "", fmt.Errorf("favorite cache was not found after daemon refresh")
-	}
-	res, path, err := key.EnsureFavoriteCache(ctx)
-	return res.Target, path, err
-}
-
-func snsCachePath(ctx context.Context, refresh bool) (string, error) {
-	if refresh {
-		return refreshSNSCache(ctx)
-	}
-	if _, path, ok := key.SNSCachePathIfExists(); ok {
-		return path, nil
-	}
-	_, path, err := key.EnsureSNSCache(ctx)
-	return path, err
-}
-
-func headImageCachePath(ctx context.Context, refresh bool) (string, bool) {
-	if refresh {
-		socketPath, err := app.SocketPath()
-		if err == nil {
-			client := daemon.Client{SocketPath: socketPath, Timeout: time.Minute}
-			if client.Healthy(ctx) {
-				_, _ = client.Call(ctx, daemon.ActionRefreshAvatars)
-			}
-		}
-		if _, path, err := key.EnsureHeadImageCache(ctx); err == nil {
-			return path, true
-		}
-		return "", false
-	}
-	if _, path, ok := key.HeadImageCachePathIfExists(); ok {
-		return path, true
-	}
-	if _, path, err := key.EnsureHeadImageCache(ctx); err == nil {
-		return path, true
-	}
-	return "", false
-}
-
-func refreshSNSCache(ctx context.Context) (string, error) {
-	socketPath, err := app.SocketPath()
-	if err != nil {
-		return "", err
-	}
-	client := daemon.Client{SocketPath: socketPath, Timeout: time.Minute}
-	if client.Healthy(ctx) {
-		if _, err := client.Call(ctx, daemon.ActionRefreshSNS); err != nil {
-			if !isUnknownDaemonAction(err) {
-				return "", err
-			}
-			_, path, err := key.EnsureSNSCache(ctx)
-			return path, err
-		}
-		if _, path, ok := key.SNSCachePathIfExists(); ok {
-			return path, nil
-		}
-		return "", fmt.Errorf("sns cache was not found after daemon refresh")
-	}
-	_, path, err := key.EnsureSNSCache(ctx)
-	return path, err
-}
-
 func isUnknownDaemonAction(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "unknown daemon action")
-}
-
-func newMediaResolver(target key.TargetDB, cacheDir string) media.Resolver {
-	resourceDBs := []string{}
-	if path, err := key.CachePath(target.Account, "message/message_resource.db"); err == nil {
-		resourceDBs = append(resourceDBs, path)
-	}
-	if paths, _, err := key.MediaCachePaths(); err == nil {
-		resourceDBs = append(resourceDBs, paths...)
-	}
-	return media.NewResolver(target.DataDir, cacheDir, resourceDBs...)
-}
-
-func parseMessageRange(dateText string, startText string, endText string) (int64, int64, bool, bool, error) {
-	dateText = strings.TrimSpace(dateText)
-	startText = strings.TrimSpace(startText)
-	endText = strings.TrimSpace(endText)
-	if dateText != "" && (startText != "" || endText != "") {
-		return 0, 0, false, false, fmt.Errorf("--date cannot be combined with --start or --end")
-	}
-	if dateText != "" {
-		start, end, err := parseDateRange(dateText)
-		if err != nil {
-			return 0, 0, false, false, err
-		}
-		return start, end, true, true, nil
-	}
-	start, hasStart, err := parseTimeBound(startText, "start", false)
-	if err != nil {
-		return 0, 0, false, false, err
-	}
-	end, hasEnd, err := parseTimeBound(endText, "end", true)
-	if err != nil {
-		return 0, 0, false, false, err
-	}
-	if hasStart && hasEnd && start > end {
-		return 0, 0, false, false, fmt.Errorf("start must not be later than end")
-	}
-	return start, end, hasStart, hasEnd, nil
-}
-
-func parseTimelineRange(dateText string, startText string, endText string) (int64, int64, string, string, error) {
-	dateText = strings.TrimSpace(dateText)
-	startText = strings.TrimSpace(startText)
-	endText = strings.TrimSpace(endText)
-	if dateText != "" && (startText != "" || endText != "") {
-		return 0, 0, "", "", fmt.Errorf("--date cannot be combined with --start or --end")
-	}
-	if dateText != "" {
-		start, end, err := parseDateRange(dateText)
-		if err != nil {
-			return 0, 0, "", "", err
-		}
-		return start, end, formatMetaTime(start, true), formatMetaTime(end, true), nil
-	}
-	if startText == "" || endText == "" {
-		return 0, 0, "", "", fmt.Errorf("timeline requires --date or both --start and --end")
-	}
-	start, hasStart, err := parseTimeBound(startText, "start", false)
-	if err != nil {
-		return 0, 0, "", "", err
-	}
-	end, hasEnd, err := parseTimeBound(endText, "end", true)
-	if err != nil {
-		return 0, 0, "", "", err
-	}
-	if !hasStart || !hasEnd {
-		return 0, 0, "", "", fmt.Errorf("timeline requires both --start and --end")
-	}
-	if start > end {
-		return 0, 0, "", "", fmt.Errorf("start must not be later than end")
-	}
-	return start, end, formatMetaTime(start, true), formatMetaTime(end, true), nil
-}
-
-func parseDateRange(value string) (int64, int64, error) {
-	value = strings.TrimSpace(value)
-	now := time.Now()
-	switch value {
-	case "today":
-		year, month, day := now.Date()
-		start := time.Date(year, month, day, 0, 0, 0, 0, time.Local)
-		return start.Unix(), start.Add(24*time.Hour - time.Second).Unix(), nil
-	case "yesterday":
-		year, month, day := now.AddDate(0, 0, -1).Date()
-		start := time.Date(year, month, day, 0, 0, 0, 0, time.Local)
-		return start.Unix(), start.Add(24*time.Hour - time.Second).Unix(), nil
-	default:
-		start, hasStart, err := parseTimeBound(value, "date", false)
-		if err != nil {
-			return 0, 0, fmt.Errorf("invalid date %q: use today, yesterday, or YYYY-MM-DD", value)
-		}
-		end, hasEnd, err := parseTimeBound(value, "date", true)
-		if err != nil || !hasStart || !hasEnd {
-			return 0, 0, fmt.Errorf("invalid date %q: use today, yesterday, or YYYY-MM-DD", value)
-		}
-		if end-start != 24*60*60-1 {
-			return 0, 0, fmt.Errorf("invalid date %q: use today, yesterday, or YYYY-MM-DD", value)
-		}
-		return start, end, nil
-	}
-}
-
-func parseTimeBound(value string, field string, isEnd bool) (int64, bool, error) {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return 0, false, nil
-	}
-	if allDigits(value) {
-		ts, err := strconv.ParseInt(value, 10, 64)
-		if err != nil {
-			return 0, false, fmt.Errorf("invalid %s time %q", field, value)
-		}
-		return ts, true, nil
-	}
-	if t, err := time.Parse(time.RFC3339, value); err == nil {
-		return t.Unix(), true, nil
-	}
-	layouts := []struct {
-		layout   string
-		dateOnly bool
-	}{
-		{"2006-01-02 15:04:05", false},
-		{"2006-01-02 15:04", false},
-		{"2006-01-02", true},
-	}
-	for _, item := range layouts {
-		t, err := time.ParseInLocation(item.layout, value, time.Local)
-		if err != nil {
-			continue
-		}
-		if item.dateOnly && isEnd {
-			t = t.Add(24*time.Hour - time.Second)
-		}
-		return t.Unix(), true, nil
-	}
-	return 0, false, fmt.Errorf("invalid %s time %q: use Unix seconds, YYYY-MM-DD, YYYY-MM-DD HH:MM, YYYY-MM-DD HH:MM:SS, or RFC3339", field, value)
-}
-
-func allDigits(value string) bool {
-	if value == "" {
-		return false
-	}
-	for _, r := range value {
-		if r < '0' || r > '9' {
-			return false
-		}
-	}
-	return true
 }
 
 func validFormat(format string) bool {
@@ -3968,13 +3080,6 @@ func flagProvided(args []string, name string) bool {
 		}
 	}
 	return false
-}
-
-func trimMessagePage(list []messages.Message, limit int) ([]messages.Message, bool) {
-	if limit <= 0 || len(list) <= limit {
-		return list, false
-	}
-	return list[:limit], true
 }
 
 type timingTrace struct {
@@ -4026,58 +3131,13 @@ func traceBool(name string, value bool) string {
 	return name + "=" + strconv.FormatBool(value)
 }
 
-func countPotentialMediaRows(list []messages.Message) (int, int) {
-	mediaRows := 0
-	voiceRows := 0
-	for _, msg := range list {
-		switch msg.Type {
-		case 3, 34, 43, 49:
-			mediaRows++
-		}
-		if msg.Type == 34 {
-			voiceRows++
-		}
-	}
-	return mediaRows, voiceRows
-}
-
-func formatMetaTime(ts int64, ok bool) string {
-	if !ok || ts <= 0 {
-		return ""
-	}
-	return time.Unix(ts, 0).Format("2006-01-02 15:04:05")
-}
-
-func localTimezoneName() string {
-	if tz := strings.TrimSpace(os.Getenv("TZ")); tz != "" {
-		return tz
-	}
-	if time.Local != nil {
-		if name := strings.TrimSpace(time.Local.String()); name != "" && name != "Local" {
-			return name
-		}
-	}
-	if target, err := os.Readlink("/etc/localtime"); err == nil {
-		if idx := strings.LastIndex(target, "/zoneinfo/"); idx >= 0 {
-			return strings.TrimPrefix(target[idx+len("/zoneinfo/"):], "/")
-		}
-	}
-	_, offset := time.Now().Zone()
-	sign := "+"
-	if offset < 0 {
-		sign = "-"
-		offset = -offset
-	}
-	return fmt.Sprintf("UTC%s%02d:%02d", sign, offset/3600, (offset%3600)/60)
-}
-
 func buildMessagesNextArgs(username string, start int64, hasStart bool, end int64, hasEnd bool, nextAfterSeq int64, limit int, includeSource bool, noIndex bool) []string {
 	args := []string{"messages", "--username", username}
 	if hasStart {
-		args = append(args, "--start", formatMetaTime(start, true))
+		args = append(args, "--start", wxquery.FormatMetaTime(start, true))
 	}
 	if hasEnd {
-		args = append(args, "--end", formatMetaTime(end, true))
+		args = append(args, "--end", wxquery.FormatMetaTime(end, true))
 	}
 	args = append(args, "--after-seq", strconv.FormatInt(nextAfterSeq, 10))
 	if limit > 0 {
@@ -4114,10 +3174,6 @@ func buildTimelineNextArgs(username string, kind string, query string, start str
 	return args
 }
 
-type newMessagesState struct {
-	Sessions map[string]int64 `json:"sessions"`
-}
-
 type apiState struct {
 	Addr      string `json:"addr"`
 	PID       int    `json:"pid"`
@@ -4125,64 +3181,6 @@ type apiState struct {
 	StartedAt string `json:"started_at"`
 	Version   string `json:"version"`
 	Mode      string `json:"mode,omitempty"`
-}
-
-func newMessagesStatePath(account string) (string, error) {
-	path, err := app.CacheDBPath(account, "state/new_messages.json")
-	if err != nil {
-		return "", err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return "", err
-	}
-	if err := app.ChownForSudo(filepath.Dir(path)); err != nil {
-		return "", err
-	}
-	return path, nil
-}
-
-func loadNewMessagesState(path string) (map[string]int64, bool, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return map[string]int64{}, false, nil
-		}
-		return nil, false, err
-	}
-	var state newMessagesState
-	if err := json.Unmarshal(data, &state); err != nil {
-		return nil, false, fmt.Errorf("parse new-messages state: %w", err)
-	}
-	if state.Sessions == nil {
-		state.Sessions = map[string]int64{}
-	}
-	return state.Sessions, true, nil
-}
-
-func saveNewMessagesState(path string, sessions map[string]int64) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	data, err := json.MarshalIndent(newMessagesState{Sessions: sessions}, "", "  ")
-	if err != nil {
-		return err
-	}
-	data = append(data, '\n')
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		return err
-	}
-	if err := app.ChownForSudo(path); err != nil {
-		return err
-	}
-	return app.ChownForSudo(filepath.Dir(path))
-}
-
-func copyState(in map[string]int64) map[string]int64 {
-	out := make(map[string]int64, len(in))
-	for key, value := range in {
-		out[key] = value
-	}
-	return out
 }
 
 var defaultContactFields = []string{"username", "alias", "remark", "nick_name", "head_url", "kind"}
