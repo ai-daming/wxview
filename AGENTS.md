@@ -31,6 +31,9 @@ paths automatically when the supporting caches are available.
   rather than block init.
 - `wxview init` should be concise by default: print account, data_dir, key
   counts, and warnings. Per-DB fingerprints/status belong behind `--verbose`.
+- `wxview me` reports the current WeChat identity Wxview will read. It supports
+  `--format table|json` and `--detail paths`; default output must include a
+  short `data_dir_fingerprint` but not the full source `data_dir`.
 - On Windows, account discovery reads `%APPDATA%\Tencent\xwechat\config\*.ini`
   and searches `xwechat_files\<account>\db_storage`. `WXVIEW_WECHAT_DB_STORAGE`
   may point directly at a `db_storage` directory when auto-detection fails.
@@ -49,6 +52,15 @@ paths automatically when the supporting caches are available.
   `jsonl`, or `csv` plus an explicit `--limit` for automated reads.
 - `--count` reports the filtered total before pagination; `--limit` and
   `--offset` do not affect the count.
+- `wxview api serve` is the supported read-only local WebAPI entrypoint. It
+  defaults to `--addr 127.0.0.1:38765`, must only allow loopback listen
+  addresses, and should expose `/health`, `/v1/me`, and `/v1/contacts` in the
+  first slice. It is not a remote/authenticated API in V1.
+- WebAPI business responses should include lightweight account/server identity
+  metadata so callers can distinguish multiple local instances. `GET
+  /v1/contacts` should reuse the existing contacts query semantics and return a
+  `{meta, items}` envelope with `display_name = remark > nick_name > alias >
+  username`.
 - `wxview messages` requires `--username`; without args it must show the same
   help as `wxview messages --help`. It supports `--format table|json|jsonl|csv`,
   `--date`, `--start`, `--end`, `--after-seq`, `--limit`, `--offset`,
@@ -202,10 +214,11 @@ product goal.
   If `--refresh` is used, refresh both contact and message caches, preferring
   daemon refresh actions when available. Do not route timeline queries through
   the daemon in V1.
-- Do not reintroduce daemon-side `list_contacts` unless the product direction
-  explicitly changes to a real query service, Web API, or MCP service.
+- Do not reintroduce daemon-side `list_contacts`; the WebAPI product direction
+  is a separate `wxview api serve` process that reads local cache/query services
+  directly.
 - The daemon uses the internal Unix socket `~/.wxview/wxview.sock`. Treat this as
-  internal transport, not a public Web API.
+  internal transport, not the WebAPI.
 - Decrypted contact cache path is:
   `~/.wxview/cache/<account>/contact/contact.db`
 - Decrypted message cache paths are:

@@ -9,14 +9,17 @@ Wxview 和 WeChat CLI / wx-cli 属于同一类工具：从你自己电脑上的�
 可交给 AI 使用的本地数据源。
 
 Wxview 的重点是清楚的本地缓存边界和稳定的机器输出：`init` 负责一次性准备 key，
-`daemon start` 负责持续解密缓存和维护消息索引，查询命令直接读取本地 cache / index。
+`daemon start` 负责持续解密缓存和维护消息索引，查询命令和 `api serve` 直接读取
+本地 cache / index。
 
 ## 核心特点
 
 - **本地优先**：微信数据、数据库 key、解密缓存和消息索引都保存在本机 `~/.wxview/`。
 - **常驻维护**：`wxview daemon start` 持续刷新解密缓存，并后台生成/更新消息索引。
 - **AI 友好**：支持 `json`、`jsonl`、`csv` 和 `table` 输出；`messages` / `timeline` 的 JSON 输出带 `meta.next_args`，方便可靠分页。
+- **身份清楚**：`wxview me` 和 WebAPI `GET /v1/me` 会返回当前账号身份，方便区分多个本地实例。
 - **跨会话读取**：既能按明确 `username` 查询单个聊天，也能按联系人筛选条件合并成全局时间线。
+- **本地 WebAPI**：`wxview api serve` 提供 loopback-only 只读 HTTP 接口，适合脚本和 AI 工具接入。
 - **媒体可用**：图片、视频、文件和语音在支持缓存可用时会自动解析成本地可打开路径；语音会内置解码为 WAV，不要求系统安装 ffmpeg。
 - **可删除索引**：消息索引是派生加速层，可以删除重建，不改变源微信库和解密缓存。
 
@@ -34,7 +37,7 @@ Wxview 的重点是清楚的本地缓存边界和稳定的机器输出：`init` 
 - Linux
 - macOS 微信 3.x
 - WAL patch
-- 公开 Web API
+- 远程 WebAPI 访问和认证写接口
 - 语音转文字
 
 ## 快速开始
@@ -125,8 +128,17 @@ Windows 需要在管理员终端运行：
 找联系人或群：
 
 ```sh
+./bin/wxview me --format json
 ./bin/wxview contacts --kind chatroom --query AI --limit 20 --format json
 ./bin/wxview contacts --kind friend --query 张三 --limit 20 --format json
+```
+
+启动本机只读 WebAPI：
+
+```sh
+./bin/wxview api serve --addr 127.0.0.1:38765
+curl http://127.0.0.1:38765/v1/me
+curl 'http://127.0.0.1:38765/v1/contacts?kind=chatroom&limit=5'
 ```
 
 读取某个会话的聊天记录：
@@ -170,6 +182,7 @@ sudo ./bin/wxview init
 | 常驻维护 | `wxview daemon start` | 持续解密缓存，维护 message index |
 | 状态检查 | `daemon status` / `cache status` / `index status` | 看 daemon、cache、index 是否健康 |
 | 查询 | `sessions` / `contacts` / `messages` / `timeline` / `search` | 直接读取本地 cache / index |
+| WebAPI | `wxview api serve` | loopback-only 只读 HTTP 查询入口 |
 
 不要把 `init` 当成常驻服务。`init` 是一次性准备动作；`daemon start` 才是让 Wxview
 在日常使用中持续接近实时的入口。
@@ -177,6 +190,9 @@ sudo ./bin/wxview init
 查询命令不会把 daemon 当查询服务。daemon 只负责后台刷新缓存和索引；`contacts`、
 `sessions`、`messages`、`timeline`、`search` 等命令始终直接读取本地解密 cache
 或派生 index。
+
+WebAPI 也不复用 daemon socket。`wxview api serve` 是独立只读 HTTP 入口，默认只监听
+`127.0.0.1:38765`，业务接口会返回账号和 server 标识，方便区分多个本地实例。
 
 ## 常用场景
 
@@ -221,8 +237,10 @@ sudo ./bin/wxview init
 | 命令 | 用途 |
 | --- | --- |
 | `wxview init` | 首次设置：检测微信、提取并验证支持数据库 key |
+| `wxview me` | 查看当前 Wxview 会读取的微信账号身份 |
 | `wxview daemon start` | 启动后台缓存刷新和索引维护 |
 | `wxview daemon status` | 检查 daemon 是否响应 health |
+| `wxview api serve` | 启动 loopback-only 只读 WebAPI |
 | `wxview cache status` | 查看解密缓存 freshness 和 key 覆盖 |
 | `wxview cache clean-tmp` | 清理解密 cache 层过期临时文件 |
 | `wxview index status` | 查看消息索引是否 missing/building/ready/stale |
@@ -306,11 +324,12 @@ Wxview 的本地状态默认在：
 | 刷新元数据 | `~/.wxview/cache/<account>/mtime.json` |
 | daemon socket | `~/.wxview/wxview.sock` |
 
-daemon 是内部缓存维护服务，不是公开 API：
+daemon 是内部缓存维护服务，不是 WebAPI。WebAPI 由 `wxview api serve` 提供：
 
 - 支持的 CLI 形式只有 `wxview daemon`、`wxview daemon start`、`wxview daemon stop`、`wxview daemon status`。
 - `wxview daemon` 和 `wxview daemon --help` 一样，只显示帮助，不启动服务。
-- socket `~/.wxview/wxview.sock` 是内部控制通道，不是 Web API。
+- socket `~/.wxview/wxview.sock` 是内部控制通道，不是 WebAPI。
+- `wxview api serve --addr 127.0.0.1:38765` 启动独立只读 HTTP 查询入口，默认只允许 loopback 地址。
 - V1 不 patch WAL；刷新在微信写回或 checkpoint 到主 DB 后接近实时。
 
 消息索引用来加速 `messages` 和 `timeline`：

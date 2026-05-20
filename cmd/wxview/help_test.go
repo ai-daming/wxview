@@ -18,7 +18,12 @@ func TestRootHelpIsDescriptive(t *testing.T) {
 		"wxview - Read local WeChat data",
 		"Machine-readable usage",
 		"wxview init",
+		"wxview me",
+		"wxview api",
 		"wxview cache",
+		"wxview me --help",
+		"wxview api --help",
+		"wxview api serve --help",
 		"wxview contacts --help",
 		"wxview members --help",
 		"wxview sessions --help",
@@ -34,6 +39,67 @@ func TestRootHelpIsDescriptive(t *testing.T) {
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("root help missing %q:\n%s", want, text)
+		}
+	}
+}
+
+func TestMeHelpIsActionable(t *testing.T) {
+	var out bytes.Buffer
+	if err := run([]string{"me", "--help"}, &out, &out); err != nil {
+		t.Fatal(err)
+	}
+	text := out.String()
+	for _, want := range []string{
+		"wxview me - Show the current WeChat account identity",
+		"--format table|json",
+		"--detail paths",
+		"data_dir_fingerprint",
+		"identity_source",
+		"wxview me --format json",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("me help missing %q:\n%s", want, text)
+		}
+	}
+}
+
+func TestAPIHelpIsActionable(t *testing.T) {
+	var out bytes.Buffer
+	if err := run([]string{"api", "--help"}, &out, &out); err != nil {
+		t.Fatal(err)
+	}
+	text := out.String()
+	for _, want := range []string{
+		"wxview api - Run the read-only local WebAPI",
+		"wxview api serve",
+		"127.0.0.1:38765",
+		"GET /v1/me",
+		"GET /v1/contacts",
+		"daemon socket",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("api help missing %q:\n%s", want, text)
+		}
+	}
+}
+
+func TestAPIServeHelpIsActionable(t *testing.T) {
+	var out bytes.Buffer
+	if err := run([]string{"api", "serve", "--help"}, &out, &out); err != nil {
+		t.Fatal(err)
+	}
+	text := out.String()
+	for _, want := range []string{
+		"wxview api serve - Start the read-only local WebAPI",
+		"--addr HOST:PORT",
+		"loopback",
+		"GET /health",
+		"kind",
+		"limit",
+		"account/server identity",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("api serve help missing %q:\n%s", want, text)
 		}
 	}
 }

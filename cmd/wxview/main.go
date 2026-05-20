@@ -24,6 +24,7 @@ import (
 	"wxview/internal/contacts"
 	"wxview/internal/daemon"
 	"wxview/internal/favorites"
+	"wxview/internal/identity"
 	"wxview/internal/key"
 	"wxview/internal/media"
 	"wxview/internal/messages"
@@ -31,6 +32,7 @@ import (
 	"wxview/internal/sessions"
 	"wxview/internal/sns"
 	"wxview/internal/timeline"
+	"wxview/internal/webapi"
 )
 
 const messageEnvelopeSchemaVersion = 1
@@ -52,8 +54,12 @@ func run(args []string, stdout io.Writer, stderr io.Writer) error {
 	switch args[0] {
 	case "init":
 		return runInit(ctx, args[1:], stdout)
+	case "me":
+		return runMe(ctx, args[1:], stdout)
 	case "daemon":
 		return runDaemon(args[1:], stdout)
+	case "api":
+		return runAPI(ctx, args[1:], stdout)
 	case "cache":
 		return runCache(args[1:], stdout)
 	case "index":
@@ -111,7 +117,9 @@ query message history for an explicit username.
 Commands:
   wxview init       First-time setup: detect WeChat, get supported DB keys,
                     and save them locally. Usually run once at the beginning.
+  wxview me         Show the current WeChat account identity Wxview will read.
   wxview daemon     Show daemon help.
+  wxview api        Run the read-only local WebAPI.
   wxview cache      Inspect local decrypted cache freshness and key coverage.
   wxview index      Inspect and maintain the derived message index.
   wxview contacts   List contacts from the decrypted contact cache.
@@ -130,6 +138,8 @@ Commands:
 
 Common examples:
   wxview init
+  wxview me --format json
+  wxview api serve --addr 127.0.0.1:38765
   wxview contacts --format json
   wxview contacts --kind friend --format jsonl
   wxview contacts --kind friend --format csv
@@ -170,10 +180,13 @@ Current scope:
              sns/sns.db, and message/biz_message_*.db when keys are available.
              Message history reads by explicit username include local image/video
              path resolution when media files are available.
-  Not included yet: WAL patching, public Web API.
+  Not included yet: WAL patching, remote Web API access, authenticated write APIs.
 
   Run:
   wxview init --help
+  wxview me --help
+  wxview api --help
+  wxview api serve --help
   wxview contacts --help
   wxview members --help
   wxview sessions --help
@@ -194,8 +207,12 @@ func commandHelp(command string, stdout io.Writer, stderr io.Writer) error {
 	switch command {
 	case "init":
 		initUsage(stdout)
+	case "me":
+		meUsage(stdout)
 	case "daemon":
 		daemonUsage(stdout)
+	case "api":
+		apiUsage(stdout)
 	case "cache":
 		cacheUsage(stdout)
 	case "index":
@@ -283,6 +300,93 @@ Notes:
   set WXVIEW_WECHAT_DB_STORAGE to the account db_storage directory.`)
 }
 
+func meUsage(w io.Writer) {
+	fmt.Fprintln(w, `wxview me - Show the current WeChat account identity
+
+Usage:
+  wxview me [--format table|json] [--detail paths]
+  go run ./cmd/wxview me [--format table|json] [--detail paths]
+
+What it does:
+  Detects the current WeChat db_storage directory, derives the account username,
+  and enriches it from the decrypted contact cache when the user's own contact
+  row is present.
+
+Output fields:
+  account               WeChat account directory name.
+  username              Current account username Wxview will read as self.
+  display_name          remark > nick_name > alias > username.
+  alias                 WeChat ID / alias when present in contact cache.
+  remark                User remark when present in contact cache.
+  nick_name             Nickname when present in contact cache.
+  identity_source       account or contact_cache.
+  cache_dir             Account-scoped ~/.wxview/cache/<account> directory.
+  data_dir_fingerprint  Short sha256 fingerprint of the source db_storage path.
+  data_dir              Only included with --detail paths.
+
+Flags:
+  --format table|json   Output format. Default: table.
+  --detail paths        Include the full source db_storage path for debugging.
+
+Examples:
+  wxview me
+  wxview me --format json
+  wxview me --format json --detail paths`)
+}
+
+func apiUsage(w io.Writer) {
+	fmt.Fprintln(w, `wxview api - Run the read-only local WebAPI
+
+Usage:
+  wxview api
+  wxview api serve [--addr 127.0.0.1:38765]
+
+Subcommands:
+  serve    Start the loopback-only HTTP server.
+
+Notes:
+  The WebAPI is a separate read-only query entrypoint. It does not reuse the
+  daemon socket and does not make the daemon a query service.
+  Only loopback addresses such as 127.0.0.1:38765, localhost:38765, or
+  [::1]:38765 are accepted.
+
+Endpoints:
+  GET /health
+  GET /v1/me
+  GET /v1/contacts?kind=chatroom&limit=5
+
+Run:
+  wxview api serve --help`)
+}
+
+func apiServeUsage(w io.Writer) {
+	fmt.Fprintln(w, `wxview api serve - Start the read-only local WebAPI
+
+Usage:
+  wxview api serve [--addr 127.0.0.1:38765]
+
+Flags:
+  --addr HOST:PORT   loopback-only listen address. Default: 127.0.0.1:38765.
+
+Endpoints:
+  GET /health
+  GET /v1/me
+  GET /v1/me?detail=paths
+  GET /v1/contacts?kind=chatroom&query=AI&limit=5
+
+Contact query parameters:
+  kind       all, friend, chatroom, or other. Default: all.
+  query      Contains search over username, alias, remark, and nick_name.
+  username   Exact username lookup.
+  limit      Maximum rows. Default: 50. Max: 500. 0 means no limit.
+  offset     Rows to skip before returning results.
+  sort       username or name. Default: username.
+
+Response notes:
+  Business endpoints return JSON and include account/server identity in meta,
+  so multiple local WebAPI instances can be distinguished safely.`)
+}
+
 const (
 	daemonForegroundEnv   = "WXVIEW_DAEMON_FOREGROUND"
 	daemonSupportedForms  = "`wxview daemon`, `wxview daemon start`, `wxview daemon stop`, `wxview daemon status`"
@@ -337,7 +441,8 @@ Internal daemon actions:
   stop
 
 Notes:
-  This is an internal local transport, not a public Web API.
+  This is an internal local transport, not the WebAPI. Use wxview api serve
+  for the separate read-only HTTP query endpoint.
   daemon start writes daemon logs to ~/.wxview/wxview.log.
   V1 does not patch or stream .db-wal, so refresh is near-real-time after WeChat
   checkpoints/writes the main DB.`)
@@ -947,6 +1052,78 @@ func hasHelp(args []string) bool {
 		}
 	}
 	return false
+}
+
+func runMe(ctx context.Context, args []string, stdout io.Writer) error {
+	if hasHelp(args) {
+		meUsage(stdout)
+		return nil
+	}
+	fs := flag.NewFlagSet("me", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	format := fs.String("format", "table", "table or json")
+	detail := fs.String("detail", "", "paths")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() > 0 {
+		return fmt.Errorf("unexpected me argument: %s", fs.Arg(0))
+	}
+	if *format != "table" && *format != "json" {
+		return fmt.Errorf("invalid format %q: use table or json", *format)
+	}
+	if *detail != "" && *detail != "paths" {
+		return fmt.Errorf("invalid detail %q: use paths", *detail)
+	}
+	info, err := identity.ResolveCurrent(ctx, *detail == "paths")
+	if err != nil {
+		return err
+	}
+	return writeIdentity(stdout, info, *format)
+}
+
+func runAPI(ctx context.Context, args []string, stdout io.Writer) error {
+	if len(args) == 0 {
+		apiUsage(stdout)
+		return nil
+	}
+	switch args[0] {
+	case "-h", "--help", "help":
+		apiUsage(stdout)
+		return nil
+	case "serve":
+		return runAPIServe(ctx, args[1:], stdout)
+	default:
+		apiUsage(stdout)
+		return fmt.Errorf("unknown api command: %s", args[0])
+	}
+}
+
+func runAPIServe(ctx context.Context, args []string, stdout io.Writer) error {
+	if hasHelp(args) {
+		apiServeUsage(stdout)
+		return nil
+	}
+	fs := flag.NewFlagSet("api serve", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	addr := fs.String("addr", webapi.DefaultAddr, "loopback listen address")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() > 0 {
+		return fmt.Errorf("unexpected api serve argument: %s", fs.Arg(0))
+	}
+	if err := webapi.ValidateLoopbackAddr(*addr); err != nil {
+		return err
+	}
+	ctx, stop := signal.NotifyContext(ctx, daemonSignals()...)
+	defer stop()
+	fmt.Fprintf(stdout, "api addr: http://%s\n", *addr)
+	fmt.Fprintln(stdout, "api mode: read-only")
+	return webapi.Serve(ctx, webapi.Options{
+		Addr:    *addr,
+		Version: buildinfo.String(),
+	})
 }
 
 func runInit(ctx context.Context, args []string, stdout io.Writer) error {
@@ -3519,6 +3696,45 @@ var cacheStatusFields = []string{"group", "account", "db_rel_path", "status", "k
 var indexStatusFields = []string{"status", "query_mode", "schema_version", "source_db_count", "indexed_rows", "source_rows", "covered_chats", "built_at", "refreshed_at", "job_state", "lag_seconds", "session_lag_seconds", "lag_policy", "reason", "refresh_mode", "active_chats_checked", "active_chats_refreshed", "reconcile_sources_pending", "reconcile_tables_checked", "path", "progress_percent", "progress_rows", "progress_total_rows", "checked_tables", "covered_tables", "progress_total_tables", "progress_current", "progress_updated_at"}
 var indexBuildFields = append(append([]string{}, indexStatusFields...), "duration_ms")
 var cleanTmpFields = []string{"path", "removed", "removed_bytes", "kept"}
+
+func writeIdentity(w io.Writer, info identity.Info, format string) error {
+	switch format {
+	case "json":
+		enc := jsonEncoder(w)
+		enc.SetIndent("", "  ")
+		return enc.Encode(info)
+	case "table":
+		return writeKeyValues(w, identityFields(info.Account), identityValues(info.Account))
+	default:
+		return fmt.Errorf("unsupported format: %s", format)
+	}
+}
+
+func identityFields(account identity.Account) []string {
+	fields := []string{"account", "username", "display_name", "alias", "remark", "nick_name", "identity_source", "cache_dir", "data_dir_fingerprint"}
+	if account.DataDir != "" {
+		fields = append(fields, "data_dir")
+	}
+	return fields
+}
+
+func identityValues(account identity.Account) []string {
+	values := []string{
+		account.Account,
+		account.Username,
+		account.DisplayName,
+		account.Alias,
+		account.Remark,
+		account.NickName,
+		account.IdentitySource,
+		account.CacheDir,
+		account.DataDirFingerprint,
+	}
+	if account.DataDir != "" {
+		values = append(values, account.DataDir)
+	}
+	return values
+}
 
 func writeContacts(w io.Writer, list []contacts.Contact, format string) error {
 	switch format {
