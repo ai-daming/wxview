@@ -2,10 +2,12 @@ package main
 
 import (
 	"bytes"
+	"os"
 	"strings"
 	"testing"
 
 	"wxview/internal/key"
+	"wxview/internal/webapi"
 )
 
 func TestRootHelpIsDescriptive(t *testing.T) {
@@ -23,6 +25,9 @@ func TestRootHelpIsDescriptive(t *testing.T) {
 		"wxview cache",
 		"wxview me --help",
 		"wxview api --help",
+		"wxview api start --help",
+		"wxview api status --help",
+		"wxview api stop --help",
 		"wxview api serve --help",
 		"wxview contacts --help",
 		"wxview members --help",
@@ -71,14 +76,74 @@ func TestAPIHelpIsActionable(t *testing.T) {
 	text := out.String()
 	for _, want := range []string{
 		"wxview api - Run the read-only local WebAPI",
+		"wxview api start",
+		"wxview api status",
+		"wxview api stop",
 		"wxview api serve",
 		"127.0.0.1:38765",
 		"GET /v1/me",
 		"GET /v1/contacts",
 		"daemon socket",
+		"one API instance",
+		"start or serve",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("api help missing %q:\n%s", want, text)
+		}
+	}
+}
+
+func TestAPIStartHelpIsActionable(t *testing.T) {
+	var out bytes.Buffer
+	if err := run([]string{"api", "start", "--help"}, &out, &out); err != nil {
+		t.Fatal(err)
+	}
+	text := out.String()
+	for _, want := range []string{
+		"wxview api start - Start the read-only local WebAPI in the background",
+		"--addr HOST:PORT",
+		"one API instance",
+		"start or serve",
+		"~/.wxview/api.json",
+		"~/.wxview/api.log",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("api start help missing %q:\n%s", want, text)
+		}
+	}
+}
+
+func TestAPIStatusHelpIsActionable(t *testing.T) {
+	var out bytes.Buffer
+	if err := run([]string{"api", "status", "--help"}, &out, &out); err != nil {
+		t.Fatal(err)
+	}
+	text := out.String()
+	for _, want := range []string{
+		"wxview api status - Show the single managed WebAPI status",
+		"wxview api status",
+		"does not take --addr",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("api status help missing %q:\n%s", want, text)
+		}
+	}
+}
+
+func TestAPIStopHelpIsActionable(t *testing.T) {
+	var out bytes.Buffer
+	if err := run([]string{"api", "stop", "--help"}, &out, &out); err != nil {
+		t.Fatal(err)
+	}
+	text := out.String()
+	for _, want := range []string{
+		"wxview api stop - Stop the single managed WebAPI instance",
+		"wxview api stop",
+		"does not take --addr",
+		"Foreground wxview api serve",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("api stop help missing %q:\n%s", want, text)
 		}
 	}
 }
@@ -90,17 +155,60 @@ func TestAPIServeHelpIsActionable(t *testing.T) {
 	}
 	text := out.String()
 	for _, want := range []string{
-		"wxview api serve - Start the read-only local WebAPI",
+		"wxview api serve - Run the read-only local WebAPI in the foreground",
 		"--addr HOST:PORT",
 		"loopback",
+		"serve registers itself",
 		"GET /health",
 		"kind",
 		"limit",
-		"account/server identity",
+		"which local WebAPI endpoint",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("api serve help missing %q:\n%s", want, text)
 		}
+	}
+}
+
+func TestAPIStartRejectsExistingManagedInstance(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	if err := saveAPIState(apiState{
+		Addr:      webapi.DefaultAddr,
+		PID:       os.Getpid(),
+		LogPath:   "/tmp/wxview-api-test.log",
+		StartedAt: "2026-05-20T00:00:00Z",
+		Version:   "test",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	err := run([]string{"api", "start"}, &out, &out)
+	if err == nil {
+		t.Fatal("expected api start to reject an existing managed instance")
+	}
+	if !strings.Contains(err.Error(), "api is already running") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestAPIServeRejectsExistingManagedInstance(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	if err := saveAPIState(apiState{
+		Addr:      webapi.DefaultAddr,
+		PID:       os.Getpid(),
+		LogPath:   "/tmp/wxview-api-test.log",
+		StartedAt: "2026-05-20T00:00:00Z",
+		Version:   "test",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	err := run([]string{"api", "serve", "--addr", "127.0.0.1:58964"}, &out, &out)
+	if err == nil {
+		t.Fatal("expected api serve to reject an existing managed instance")
+	}
+	if !strings.Contains(err.Error(), "api is already running") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

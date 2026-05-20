@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -139,7 +140,7 @@ Commands:
 Common examples:
   wxview init
   wxview me --format json
-  wxview api serve --addr 127.0.0.1:38765
+  wxview api start --addr 127.0.0.1:38765
   wxview contacts --format json
   wxview contacts --kind friend --format jsonl
   wxview contacts --kind friend --format csv
@@ -186,6 +187,9 @@ Current scope:
   wxview init --help
   wxview me --help
   wxview api --help
+  wxview api start --help
+  wxview api status --help
+  wxview api stop --help
   wxview api serve --help
   wxview contacts --help
   wxview members --help
@@ -339,16 +343,24 @@ func apiUsage(w io.Writer) {
 
 Usage:
   wxview api
+  wxview api start [--addr 127.0.0.1:38765]
+  wxview api status
+  wxview api stop
   wxview api serve [--addr 127.0.0.1:38765]
 
 Subcommands:
-  serve    Start the loopback-only HTTP server.
+  start    Start the loopback-only HTTP server in the background.
+  status   Show the single managed API instance status.
+  stop     Stop the single managed API instance.
+  serve    Run the HTTP server in the foreground for debugging.
 
 Notes:
   The WebAPI is a separate read-only query entrypoint. It does not reuse the
   daemon socket and does not make the daemon a query service.
   Only loopback addresses such as 127.0.0.1:38765, localhost:38765, or
   [::1]:38765 are accepted.
+  V1 supports one API instance. Running start or serve while another API
+  instance is already running returns an error.
 
 Endpoints:
   GET /health
@@ -356,17 +368,64 @@ Endpoints:
   GET /v1/contacts?kind=chatroom&limit=5
 
 Run:
+  wxview api start --help
+  wxview api status --help
+  wxview api stop --help
   wxview api serve --help`)
 }
 
+func apiStartUsage(w io.Writer) {
+	fmt.Fprintln(w, `wxview api start - Start the read-only local WebAPI in the background
+
+Usage:
+  wxview api start [--addr 127.0.0.1:38765]
+
+Flags:
+  --addr HOST:PORT   loopback-only listen address. Default: 127.0.0.1:38765.
+
+Notes:
+  V1 supports one API instance. If an API instance started by start or serve is
+  already running, start returns an error instead of starting a second process.
+  Runtime files are:
+    ~/.wxview/api.json
+    ~/.wxview/api.log`)
+}
+
+func apiStatusUsage(w io.Writer) {
+	fmt.Fprintln(w, `wxview api status - Show the single managed WebAPI status
+
+Usage:
+  wxview api status
+
+Notes:
+  status does not take --addr in V1 because only one managed API instance is
+  supported.`)
+}
+
+func apiStopUsage(w io.Writer) {
+	fmt.Fprintln(w, `wxview api stop - Stop the single managed WebAPI instance
+
+Usage:
+  wxview api stop
+
+Notes:
+  stop does not take --addr in V1 because only one managed API instance is
+  supported. Foreground wxview api serve processes started by this version are
+  also registered as the single API instance.`)
+}
+
 func apiServeUsage(w io.Writer) {
-	fmt.Fprintln(w, `wxview api serve - Start the read-only local WebAPI
+	fmt.Fprintln(w, `wxview api serve - Run the read-only local WebAPI in the foreground
 
 Usage:
   wxview api serve [--addr 127.0.0.1:38765]
 
 Flags:
   --addr HOST:PORT   loopback-only listen address. Default: 127.0.0.1:38765.
+
+Notes:
+  V1 supports one API instance. serve registers itself while running, so start
+  or another serve command will return an error until this process exits.
 
 Endpoints:
   GET /health
@@ -384,16 +443,20 @@ Contact query parameters:
 
 Response notes:
   Business endpoints return JSON and include account/server identity in meta,
-  so multiple local WebAPI instances can be distinguished safely.`)
+  so callers can confirm which local WebAPI endpoint they are reading.`)
 }
 
 const (
 	daemonForegroundEnv   = "WXVIEW_DAEMON_FOREGROUND"
+	apiManagedChildEnv    = "WXVIEW_API_MANAGED_CHILD"
 	daemonSupportedForms  = "`wxview daemon`, `wxview daemon start`, `wxview daemon stop`, `wxview daemon status`"
 	daemonStartWait       = 15 * time.Second
 	daemonStopTimeout     = 35 * time.Second
 	daemonStopWait        = 5 * time.Second
 	daemonStatusPollEvery = 100 * time.Millisecond
+	apiStartWait          = 10 * time.Second
+	apiStopWait           = 5 * time.Second
+	apiStatusPollEvery    = 100 * time.Millisecond
 )
 
 func daemonUsage(w io.Writer) {
@@ -441,8 +504,8 @@ Internal daemon actions:
   stop
 
 Notes:
-  This is an internal local transport, not the WebAPI. Use wxview api serve
-  for the separate read-only HTTP query endpoint.
+  This is an internal local transport, not the WebAPI. Use wxview api start or
+  wxview api serve for the separate read-only HTTP query endpoint.
   daemon start writes daemon logs to ~/.wxview/wxview.log.
   V1 does not patch or stream .db-wal, so refresh is near-real-time after WeChat
   checkpoints/writes the main DB.`)
@@ -1091,12 +1154,214 @@ func runAPI(ctx context.Context, args []string, stdout io.Writer) error {
 	case "-h", "--help", "help":
 		apiUsage(stdout)
 		return nil
+	case "start":
+		return runAPIStart(ctx, args[1:], stdout)
+	case "status":
+		return runAPIStatus(ctx, args[1:], stdout)
+	case "stop":
+		return runAPIStop(ctx, args[1:], stdout)
 	case "serve":
 		return runAPIServe(ctx, args[1:], stdout)
 	default:
 		apiUsage(stdout)
 		return fmt.Errorf("unknown api command: %s", args[0])
 	}
+}
+
+func runAPIStart(ctx context.Context, args []string, stdout io.Writer) error {
+	if hasHelp(args) {
+		apiStartUsage(stdout)
+		return nil
+	}
+	fs := flag.NewFlagSet("api start", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	addr := fs.String("addr", webapi.DefaultAddr, "loopback listen address")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() > 0 {
+		return fmt.Errorf("unexpected api start argument: %s", fs.Arg(0))
+	}
+	if err := webapi.ValidateLoopbackAddr(*addr); err != nil {
+		return err
+	}
+	if err := ensureNoAPIAlreadyRunning(ctx, *addr); err != nil {
+		return err
+	}
+
+	logPath, err := apiLogPath()
+	if err != nil {
+		return err
+	}
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return err
+	}
+	defer logFile.Close()
+	if err := app.ChownForSudo(logPath); err != nil {
+		return err
+	}
+
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command(exe, "api", "serve", "--addr", *addr)
+	cmd.Env = append(os.Environ(), apiManagedChildEnv+"=1")
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+	cmd.SysProcAttr = daemonSysProcAttr()
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	state := apiState{
+		Addr:      *addr,
+		PID:       cmd.Process.Pid,
+		LogPath:   logPath,
+		StartedAt: time.Now().Format(time.RFC3339),
+		Version:   buildinfo.String(),
+		Mode:      "background",
+	}
+	if err := saveAPIState(state); err != nil {
+		_ = terminateProcess(cmd.Process.Pid)
+		return err
+	}
+	fmt.Fprintf(stdout, "api addr: http://%s\n", *addr)
+	fmt.Fprintf(stdout, "log: %s\n", logPath)
+	fmt.Fprintf(stdout, "pid: %d\n", cmd.Process.Pid)
+
+	exitCh := make(chan error, 1)
+	go func() {
+		exitCh <- cmd.Wait()
+	}()
+	if ok, err := waitForAPIHealthy(ctx, *addr, apiStartWait, exitCh); err != nil {
+		_ = removeAPIState()
+		return err
+	} else if ok {
+		fmt.Fprintln(stdout, "status: running")
+		return nil
+	}
+	fmt.Fprintln(stdout, "status: starting")
+	fmt.Fprintln(stdout, "note: api has not responded to health yet; check status or the log file.")
+	return nil
+}
+
+func runAPIStatus(ctx context.Context, args []string, stdout io.Writer) error {
+	if hasHelp(args) {
+		apiStatusUsage(stdout)
+		return nil
+	}
+	fs := flag.NewFlagSet("api status", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() > 0 {
+		return fmt.Errorf("unexpected api status argument: %s", fs.Arg(0))
+	}
+	state, ok, err := loadAPIState()
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "version: %s\n", buildinfo.String())
+	if !ok {
+		if health, healthy := apiHealth(ctx, webapi.DefaultAddr); healthy {
+			fmt.Fprintf(stdout, "api addr: http://%s\n", webapi.DefaultAddr)
+			fmt.Fprintf(stdout, "server_id: %s\n", health.ServerID)
+			if me, ok := apiMe(ctx, webapi.DefaultAddr); ok {
+				fmt.Fprintf(stdout, "account: %s\n", me.Account.Username)
+				fmt.Fprintf(stdout, "display_name: %s\n", me.Account.DisplayName)
+				fmt.Fprintf(stdout, "identity_source: %s\n", me.Account.IdentitySource)
+			}
+			fmt.Fprintln(stdout, "status: running")
+			fmt.Fprintln(stdout, "mode: foreground")
+			return nil
+		}
+		fmt.Fprintln(stdout, "status: stopped")
+		return nil
+	}
+	if state.Addr == "" {
+		state.Addr = webapi.DefaultAddr
+	}
+	fmt.Fprintf(stdout, "api addr: http://%s\n", state.Addr)
+	fmt.Fprintf(stdout, "pid: %d\n", state.PID)
+	if state.LogPath != "" {
+		fmt.Fprintf(stdout, "log: %s\n", state.LogPath)
+	}
+	if state.Version != "" && state.Version != buildinfo.String() {
+		fmt.Fprintf(stdout, "api_version: %s\n", state.Version)
+	}
+	if state.Mode != "" {
+		fmt.Fprintf(stdout, "mode: %s\n", state.Mode)
+	}
+	if health, healthy := apiHealth(ctx, state.Addr); healthy {
+		fmt.Fprintf(stdout, "server_id: %s\n", health.ServerID)
+		if me, ok := apiMe(ctx, state.Addr); ok {
+			fmt.Fprintf(stdout, "account: %s\n", me.Account.Username)
+			fmt.Fprintf(stdout, "display_name: %s\n", me.Account.DisplayName)
+			fmt.Fprintf(stdout, "identity_source: %s\n", me.Account.IdentitySource)
+		}
+		fmt.Fprintln(stdout, "status: running")
+		return nil
+	}
+	if state.PID > 0 && processAlive(state.PID) {
+		fmt.Fprintln(stdout, "status: starting")
+		fmt.Fprintln(stdout, "reason: health check failed")
+		return nil
+	}
+	_ = removeAPIState()
+	fmt.Fprintln(stdout, "status: stopped")
+	fmt.Fprintln(stdout, "reason: stale pid")
+	return nil
+}
+
+func runAPIStop(ctx context.Context, args []string, stdout io.Writer) error {
+	if hasHelp(args) {
+		apiStopUsage(stdout)
+		return nil
+	}
+	fs := flag.NewFlagSet("api stop", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() > 0 {
+		return fmt.Errorf("unexpected api stop argument: %s", fs.Arg(0))
+	}
+	state, ok, err := loadAPIState()
+	if err != nil {
+		return err
+	}
+	if !ok {
+		if _, healthy := apiHealth(ctx, webapi.DefaultAddr); healthy {
+			return fmt.Errorf("api is running at http://%s but no managed pid was found; stop the foreground process with Ctrl+C", webapi.DefaultAddr)
+		}
+		fmt.Fprintln(stdout, "status: stopped")
+		return nil
+	}
+	if state.Addr == "" {
+		state.Addr = webapi.DefaultAddr
+	}
+	fmt.Fprintf(stdout, "api addr: http://%s\n", state.Addr)
+	fmt.Fprintf(stdout, "pid: %d\n", state.PID)
+	if state.PID <= 0 || !processAlive(state.PID) {
+		_ = removeAPIState()
+		fmt.Fprintln(stdout, "status: stopped")
+		return nil
+	}
+	if state.PID == os.Getpid() {
+		return fmt.Errorf("refusing to stop current process from api state")
+	}
+	if err := terminateProcess(state.PID); err != nil {
+		return err
+	}
+	if waitForProcessStopped(ctx, state.PID, apiStopWait) {
+		_ = removeAPIState()
+		fmt.Fprintln(stdout, "status: stopped")
+		return nil
+	}
+	fmt.Fprintln(stdout, "status: stopping")
+	return nil
 }
 
 func runAPIServe(ctx context.Context, args []string, stdout io.Writer) error {
@@ -1116,6 +1381,22 @@ func runAPIServe(ctx context.Context, args []string, stdout io.Writer) error {
 	if err := webapi.ValidateLoopbackAddr(*addr); err != nil {
 		return err
 	}
+	managedChild := os.Getenv(apiManagedChildEnv) == "1"
+	if !managedChild {
+		if err := ensureNoAPIAlreadyRunning(ctx, *addr); err != nil {
+			return err
+		}
+		if err := saveAPIState(apiState{
+			Addr:      *addr,
+			PID:       os.Getpid(),
+			StartedAt: time.Now().Format(time.RFC3339),
+			Version:   buildinfo.String(),
+			Mode:      "foreground",
+		}); err != nil {
+			return err
+		}
+	}
+	defer removeAPIStateForPID(os.Getpid())
 	ctx, stop := signal.NotifyContext(ctx, daemonSignals()...)
 	defer stop()
 	fmt.Fprintf(stdout, "api addr: http://%s\n", *addr)
@@ -1124,6 +1405,146 @@ func runAPIServe(ctx context.Context, args []string, stdout io.Writer) error {
 		Addr:    *addr,
 		Version: buildinfo.String(),
 	})
+}
+
+func ensureNoAPIAlreadyRunning(ctx context.Context, addr string) error {
+	state, ok, err := loadAPIState()
+	if err != nil {
+		return err
+	}
+	if ok && state.PID > 0 && processAlive(state.PID) {
+		if strings.TrimSpace(state.Addr) == "" {
+			state.Addr = webapi.DefaultAddr
+		}
+		return fmt.Errorf("api is already running at http://%s (pid %d)", state.Addr, state.PID)
+	}
+	if ok {
+		_ = removeAPIState()
+	}
+	if addr != webapi.DefaultAddr {
+		if _, healthy := apiHealth(ctx, webapi.DefaultAddr); healthy {
+			return fmt.Errorf("api is already running at http://%s", webapi.DefaultAddr)
+		}
+	}
+	if _, healthy := apiHealth(ctx, addr); healthy {
+		return fmt.Errorf("api is already running at http://%s", addr)
+	}
+	return nil
+}
+
+func apiStatePath() (string, error) {
+	base, err := app.EnsureBaseDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(base, "api.json"), nil
+}
+
+func apiLogPath() (string, error) {
+	base, err := app.EnsureBaseDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(base, "api.log"), nil
+}
+
+func loadAPIState() (apiState, bool, error) {
+	path, err := apiStatePath()
+	if err != nil {
+		return apiState{}, false, err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return apiState{}, false, nil
+		}
+		return apiState{}, false, err
+	}
+	var state apiState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return apiState{}, false, fmt.Errorf("parse api state: %w", err)
+	}
+	if state.Addr == "" {
+		state.Addr = webapi.DefaultAddr
+	}
+	return state, true, nil
+}
+
+func saveAPIState(state apiState) error {
+	path, err := apiStatePath()
+	if err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		return err
+	}
+	return app.ChownForSudo(path)
+}
+
+func removeAPIState() error {
+	path, err := apiStatePath()
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+func removeAPIStateForPID(pid int) {
+	state, ok, err := loadAPIState()
+	if err != nil || !ok || state.PID != pid {
+		return
+	}
+	_ = removeAPIState()
+}
+
+func apiHealth(ctx context.Context, addr string) (webapi.HealthResponse, bool) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+"/health", nil)
+	if err != nil {
+		return webapi.HealthResponse{}, false
+	}
+	client := http.Client{Timeout: 500 * time.Millisecond}
+	resp, err := client.Do(req)
+	if err != nil {
+		return webapi.HealthResponse{}, false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return webapi.HealthResponse{}, false
+	}
+	var health webapi.HealthResponse
+	if err := json.NewDecoder(resp.Body).Decode(&health); err != nil {
+		return webapi.HealthResponse{}, false
+	}
+	return health, health.OK
+}
+
+func apiMe(ctx context.Context, addr string) (webapi.MeResponse, bool) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+"/v1/me", nil)
+	if err != nil {
+		return webapi.MeResponse{}, false
+	}
+	client := http.Client{Timeout: time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return webapi.MeResponse{}, false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return webapi.MeResponse{}, false
+	}
+	var me webapi.MeResponse
+	if err := json.NewDecoder(resp.Body).Decode(&me); err != nil {
+		return webapi.MeResponse{}, false
+	}
+	return me, true
 }
 
 func runInit(ctx context.Context, args []string, stdout io.Writer) error {
@@ -1672,6 +2093,49 @@ func waitForDaemonStopped(ctx context.Context, client daemon.Client, timeout tim
 	defer ticker.Stop()
 	for {
 		if !client.Healthy(ctx) {
+			return true
+		}
+		select {
+		case <-deadline.C:
+			return false
+		case <-ticker.C:
+		case <-ctx.Done():
+			return false
+		}
+	}
+}
+
+func waitForAPIHealthy(ctx context.Context, addr string, timeout time.Duration, exitCh <-chan error) (bool, error) {
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	ticker := time.NewTicker(apiStatusPollEvery)
+	defer ticker.Stop()
+	for {
+		if _, ok := apiHealth(ctx, addr); ok {
+			return true, nil
+		}
+		select {
+		case err := <-exitCh:
+			if err != nil {
+				return false, fmt.Errorf("api exited before becoming healthy: %w", err)
+			}
+			return false, fmt.Errorf("api exited before becoming healthy")
+		case <-deadline.C:
+			return false, nil
+		case <-ticker.C:
+		case <-ctx.Done():
+			return false, ctx.Err()
+		}
+	}
+}
+
+func waitForProcessStopped(ctx context.Context, pid int, timeout time.Duration) bool {
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	ticker := time.NewTicker(apiStatusPollEvery)
+	defer ticker.Stop()
+	for {
+		if !processAlive(pid) {
 			return true
 		}
 		select {
@@ -3621,6 +4085,15 @@ func buildTimelineNextArgs(username string, kind string, query string, start str
 
 type newMessagesState struct {
 	Sessions map[string]int64 `json:"sessions"`
+}
+
+type apiState struct {
+	Addr      string `json:"addr"`
+	PID       int    `json:"pid"`
+	LogPath   string `json:"log_path"`
+	StartedAt string `json:"started_at"`
+	Version   string `json:"version"`
+	Mode      string `json:"mode,omitempty"`
 }
 
 func newMessagesStatePath(account string) (string, error) {

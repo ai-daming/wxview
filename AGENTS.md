@@ -52,10 +52,14 @@ paths automatically when the supporting caches are available.
   `jsonl`, or `csv` plus an explicit `--limit` for automated reads.
 - `--count` reports the filtered total before pagination; `--limit` and
   `--offset` do not affect the count.
-- `wxview api serve` is the supported read-only local WebAPI entrypoint. It
-  defaults to `--addr 127.0.0.1:38765`, must only allow loopback listen
-  addresses, and should expose `/health`, `/v1/me`, and `/v1/contacts` in the
-  first slice. It is not a remote/authenticated API in V1.
+- `wxview api start` is the normal read-only local WebAPI entrypoint. It
+  defaults to `--addr 127.0.0.1:38765`, runs in the background, and must return
+  an error if a managed API instance is already running. V1 manages only one
+  API instance: `wxview api status` and `wxview api stop` take no `--addr`.
+  `wxview api serve` is retained as the foreground/debug form. Both forms must
+  only allow loopback listen addresses and should expose `/health`, `/v1/me`,
+  and `/v1/contacts` in the first slice. This is not a remote/authenticated API
+  in V1.
 - WebAPI business responses should include lightweight account/server identity
   metadata so callers can distinguish multiple local instances. `GET
   /v1/contacts` should reuse the existing contacts query semantics and return a
@@ -215,8 +219,8 @@ product goal.
   daemon refresh actions when available. Do not route timeline queries through
   the daemon in V1.
 - Do not reintroduce daemon-side `list_contacts`; the WebAPI product direction
-  is a separate `wxview api serve` process that reads local cache/query services
-  directly.
+  is a separate `wxview api start` / `wxview api serve` process that reads
+  local cache/query services directly.
 - The daemon uses the internal Unix socket `~/.wxview/wxview.sock`. Treat this as
   internal transport, not the WebAPI.
 - Decrypted contact cache path is:
