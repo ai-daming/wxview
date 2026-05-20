@@ -52,19 +52,29 @@ paths automatically when the supporting caches are available.
   `jsonl`, or `csv` plus an explicit `--limit` for automated reads.
 - `--count` reports the filtered total before pagination; `--limit` and
   `--offset` do not affect the count.
-- `wxview api start` is the normal read-only local WebAPI entrypoint. It
+- `wxview api start` is the normal loopback-only local WebAPI entrypoint. It
   defaults to `--addr 127.0.0.1:38765`, runs in the background, and must return
   an error if a managed API instance is already running. V1 manages only one
   API instance: `wxview api status` and `wxview api stop` take no `--addr`.
   `wxview api serve` is retained as the foreground/debug form. Both forms must
-  only allow loopback listen addresses and should expose `/health`, `/v1/me`,
-  and `/v1/contacts` in the first slice. This is not a remote/authenticated API
+  only allow loopback listen addresses. This is not a remote/authenticated API
   in V1.
 - WebAPI business responses should include lightweight account/server identity
-  metadata so callers can distinguish multiple local instances. `GET
-  /v1/contacts` should reuse the existing contacts query semantics and return a
-  `{meta, items}` envelope with `display_name = remark > nick_name > alias >
-  username`.
+  metadata so callers can distinguish multiple local instances. Business query
+  endpoints return a `{meta, items}` envelope; message-like endpoints reuse the
+  same item schema as CLI `messages`, `timeline`, `search`, and
+  `new-messages`.
+- WebAPI `GET` endpoints are query-only. They parse only documented query
+  parameters and ignore undeclared parameters, including `refresh=true`.
+  Cache refresh is exposed as the single action `POST /v1/cache/refresh` with
+  optional `scope=all|contacts|sessions|messages|favorites|articles|sns`.
+  `POST /v1/new-messages/poll` advances the incremental checkpoint;
+  `GET /v1/new-messages` is a read-only preview and must not advance it.
+- WebAPI V1 data endpoints are `/health`, `/v1/me`, `/v1/contacts`,
+  `/v1/contacts/detail`, `/v1/members`, `/v1/sessions`, `/v1/unread`,
+  `/v1/messages`, `/v1/search`, `/v1/timeline`, `/v1/new-messages`,
+  `/v1/favorites`, `/v1/articles/accounts`, `/v1/articles`, `/v1/sns/feed`,
+  `/v1/sns/search`, and `/v1/sns/notifications`, plus the POST actions above.
 - `wxview messages` requires `--username`; without args it must show the same
   help as `wxview messages --help`. It supports `--format table|json|jsonl|csv`,
   `--date`, `--start`, `--end`, `--after-seq`, `--limit`, `--offset`,

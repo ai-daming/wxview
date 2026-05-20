@@ -60,6 +60,7 @@ type ContactsMeta struct {
 	SchemaVersion int         `json:"schema_version"`
 	Account       AccountMeta `json:"account"`
 	ServerID      string      `json:"server_id"`
+	Resource      string      `json:"resource"`
 	Limit         int         `json:"limit"`
 	Offset        int         `json:"offset"`
 	Returned      int         `json:"returned"`
@@ -204,6 +205,40 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleMe(w, r)
 	case "/v1/contacts":
 		h.handleContacts(w, r)
+	case "/v1/contacts/detail":
+		h.handleContactDetail(w, r)
+	case "/v1/members":
+		h.handleMembers(w, r)
+	case "/v1/sessions":
+		h.handleSessions(w, r, false)
+	case "/v1/unread":
+		h.handleSessions(w, r, true)
+	case "/v1/messages":
+		h.handleMessages(w, r)
+	case "/v1/search":
+		h.handleSearch(w, r)
+	case "/v1/timeline":
+		h.handleTimeline(w, r)
+	case "/v1/new-messages":
+		h.handleNewMessagesPreview(w, r)
+	case "/v1/new-messages/poll":
+		h.handleNewMessagesPoll(w, r)
+	case "/v1/new-messages/reset":
+		h.handleNewMessagesReset(w, r)
+	case "/v1/favorites":
+		h.handleFavorites(w, r)
+	case "/v1/articles/accounts":
+		h.handleArticleAccounts(w, r)
+	case "/v1/articles":
+		h.handleArticles(w, r)
+	case "/v1/sns/feed":
+		h.handleSNSFeed(w, r)
+	case "/v1/sns/search":
+		h.handleSNSFeed(w, r)
+	case "/v1/sns/notifications":
+		h.handleSNSNotifications(w, r)
+	case "/v1/cache/refresh":
+		h.handleCacheRefresh(w, r)
 	default:
 		writeError(w, http.StatusNotFound, "not_found", "endpoint not found")
 	}
@@ -313,6 +348,7 @@ func (h *handler) handleContacts(w http.ResponseWriter, r *http.Request) {
 		values := next.Query()
 		values.Set("limit", strconv.Itoa(limit))
 		values.Set("offset", strconv.Itoa(offset+limit))
+		values.Del("refresh")
 		next.RawQuery = values.Encode()
 		nextURL = next.RequestURI()
 	}
@@ -322,6 +358,7 @@ func (h *handler) handleContacts(w http.ResponseWriter, r *http.Request) {
 			SchemaVersion: identity.SchemaVersion,
 			Account:       toAccountMeta(info.Account),
 			ServerID:      h.serverID,
+			Resource:      "contacts",
 			Limit:         limit,
 			Offset:        offset,
 			Returned:      len(page),

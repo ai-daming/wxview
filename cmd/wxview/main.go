@@ -120,7 +120,7 @@ Commands:
                     and save them locally. Usually run once at the beginning.
   wxview me         Show the current WeChat account identity Wxview will read.
   wxview daemon     Show daemon help.
-  wxview api        Run the read-only local WebAPI.
+  wxview api        Run the loopback-only local WebAPI.
   wxview cache      Inspect local decrypted cache freshness and key coverage.
   wxview index      Inspect and maintain the derived message index.
   wxview contacts   List contacts from the decrypted contact cache.
@@ -339,7 +339,7 @@ Examples:
 }
 
 func apiUsage(w io.Writer) {
-	fmt.Fprintln(w, `wxview api - Run the read-only local WebAPI
+	fmt.Fprintln(w, `wxview api - Run the loopback-only local WebAPI
 
 Usage:
   wxview api
@@ -355,8 +355,9 @@ Subcommands:
   serve    Run the HTTP server in the foreground for debugging.
 
 Notes:
-  The WebAPI is a separate read-only query entrypoint. It does not reuse the
-  daemon socket and does not make the daemon a query service.
+  The WebAPI is a separate local data entrypoint. It does not reuse the daemon
+  socket and does not make the daemon a query service. GET endpoints are
+  read-only queries; POST endpoints are local cache/new-messages actions.
   Only loopback addresses such as 127.0.0.1:38765, localhost:38765, or
   [::1]:38765 are accepted.
   V1 supports one API instance. Running start or serve while another API
@@ -366,6 +367,16 @@ Endpoints:
   GET /health
   GET /v1/me
   GET /v1/contacts?kind=chatroom&limit=5
+  GET /v1/sessions?limit=5
+  GET /v1/messages?username=wxid_xxx&limit=20
+  GET /v1/timeline?kind=chatroom&date=today&limit=20
+  GET /v1/search?query=合同&limit=20
+  GET /v1/favorites?limit=20
+  GET /v1/articles/accounts
+  GET /v1/sns/feed?limit=20
+  POST /v1/cache/refresh
+  POST /v1/new-messages/poll
+  POST /v1/new-messages/reset
 
 Run:
   wxview api start --help
@@ -375,7 +386,7 @@ Run:
 }
 
 func apiStartUsage(w io.Writer) {
-	fmt.Fprintln(w, `wxview api start - Start the read-only local WebAPI in the background
+	fmt.Fprintln(w, `wxview api start - Start the loopback-only local WebAPI in the background
 
 Usage:
   wxview api start [--addr 127.0.0.1:38765]
@@ -415,7 +426,7 @@ Notes:
 }
 
 func apiServeUsage(w io.Writer) {
-	fmt.Fprintln(w, `wxview api serve - Run the read-only local WebAPI in the foreground
+	fmt.Fprintln(w, `wxview api serve - Run the loopback-only local WebAPI in the foreground
 
 Usage:
   wxview api serve [--addr 127.0.0.1:38765]
@@ -432,6 +443,23 @@ Endpoints:
   GET /v1/me
   GET /v1/me?detail=paths
   GET /v1/contacts?kind=chatroom&query=AI&limit=5
+  GET /v1/contacts/detail?username=wxid_xxx
+  GET /v1/members?username=123@chatroom
+  GET /v1/sessions?kind=chatroom&limit=20
+  GET /v1/unread?limit=20
+  GET /v1/messages?username=wxid_xxx&date=today&limit=100
+  GET /v1/search?query=合同&kind=all&date=today&limit=50
+  GET /v1/timeline?kind=chatroom&query=AI&date=today&limit=200
+  GET /v1/new-messages?limit=100
+  GET /v1/favorites?type=article&limit=20
+  GET /v1/articles/accounts
+  GET /v1/articles?username=gh_xxx&limit=20
+  GET /v1/sns/feed?limit=20
+  GET /v1/sns/search?query=关键词&limit=20
+  GET /v1/sns/notifications?include_read=true&limit=20
+  POST /v1/cache/refresh
+  POST /v1/new-messages/poll
+  POST /v1/new-messages/reset
 
 Contact query parameters:
   kind       all, friend, chatroom, or other. Default: all.
@@ -443,7 +471,10 @@ Contact query parameters:
 
 Response notes:
   Business endpoints return JSON and include account/server identity in meta,
-  so callers can confirm which local WebAPI endpoint they are reading.`)
+  so callers can confirm which local WebAPI endpoint they are reading.
+  GET query endpoints ignore undeclared parameters, including refresh=true.
+  Refresh is exposed only as POST /v1/cache/refresh with optional scope:
+  all, contacts, sessions, messages, favorites, articles, or sns.`)
 }
 
 const (
@@ -505,7 +536,7 @@ Internal daemon actions:
 
 Notes:
   This is an internal local transport, not the WebAPI. Use wxview api start or
-  wxview api serve for the separate read-only HTTP query endpoint.
+  wxview api serve for the separate local HTTP data endpoint.
   daemon start writes daemon logs to ~/.wxview/wxview.log.
   V1 does not patch or stream .db-wal, so refresh is near-real-time after WeChat
   checkpoints/writes the main DB.`)
@@ -1400,7 +1431,7 @@ func runAPIServe(ctx context.Context, args []string, stdout io.Writer) error {
 	ctx, stop := signal.NotifyContext(ctx, daemonSignals()...)
 	defer stop()
 	fmt.Fprintf(stdout, "api addr: http://%s\n", *addr)
-	fmt.Fprintln(stdout, "api mode: read-only")
+	fmt.Fprintln(stdout, "api mode: local")
 	return webapi.Serve(ctx, webapi.Options{
 		Addr:    *addr,
 		Version: buildinfo.String(),
