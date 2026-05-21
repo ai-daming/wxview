@@ -294,6 +294,37 @@ func TestResolveVideoRejectsMTimeOnlyLegacyMatch(t *testing.T) {
 	}
 }
 
+func TestResolveVideoPreservesThumbnailWhenMainMissing(t *testing.T) {
+	dir := t.TempDir()
+	accountBase := filepath.Join(dir, "wxid_owner_bcc2")
+	dataDir := filepath.Join(accountBase, "db_storage")
+	videoDir := filepath.Join(accountBase, "msg", "video", "2026-05")
+	if err := os.MkdirAll(videoDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	thumbPath := filepath.Join(videoDir, "a6d6d819b222f42fe519c29c013e74db_thumb.jpg")
+	if err := os.WriteFile(thumbPath, bytes.Repeat([]byte{1}, 18138), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fixedTime := time.Unix(1700000100, 0)
+	if err := os.Chtimes(thumbPath, fixedTime, fixedTime); err != nil {
+		t.Fatal(err)
+	}
+
+	content := `<msg><videomsg md5="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" newmd5="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" rawmd5="cccccccccccccccccccccccccccccccc" length="5783794" rawlength="26500350" cdnthumblength="18138" cdnthumbwidth="304" cdnthumbheight="540" /></msg>`
+	resolver := NewResolver(dataDir, filepath.Join(dir, "cache"))
+	info := resolver.ResolveVideo("room@chatroom", 3824, 1700000100, 43, content, false)
+	if info.Status != "not_found" || info.Path != "" || !info.Thumbnail || info.ThumbnailPath != thumbPath {
+		t.Fatalf("expected missing video with resolved thumbnail: %+v", info)
+	}
+	if info.Width != 304 || info.Height != 540 {
+		t.Fatalf("thumbnail dimensions = %dx%d, want 304x540", info.Width, info.Height)
+	}
+}
+
 func TestResolveFilePathMacOS4(t *testing.T) {
 	dir := t.TempDir()
 	dataDir := filepath.Join(dir, "wxid_owner_bcc2", "db_storage")

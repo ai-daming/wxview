@@ -52,7 +52,17 @@ func (r Resolver) ResolveVideo(chatUsername string, localID int64, createTime in
 	hints := parseVideoHints(body)
 	found, ok := r.resolveVideoPath(body, createTime, chatUsername, localID, hints)
 	if !ok {
-		return notFound("video", "local video file not found")
+		info := notFound("video", "local video file not found")
+		if thumb, ok := r.resolveVideoThumbnailPath(createTime, chatUsername, localID, hints); ok {
+			r.attachVideoThumbnail(&info, thumb)
+			if info.Width == 0 && hints.thumbWidth > 0 {
+				info.Width = hints.thumbWidth
+			}
+			if info.Height == 0 && hints.thumbHeight > 0 {
+				info.Height = hints.thumbHeight
+			}
+		}
+		return info
 	}
 	if _, err := os.Stat(found.path); err != nil {
 		return notFound("video", "local video file not found")
@@ -100,12 +110,32 @@ func (r Resolver) resolveVideoPath(content string, createTime int64, chatUsernam
 	return resolveVideoPathLegacy(r.DataDir, content, createTime, chatUsername, localID, hints)
 }
 
+func (r Resolver) resolveVideoThumbnailPath(createTime int64, chatUsername string, localID int64, hints videoHints) (videoCandidate, bool) {
+	if c, ok := r.resolveVideoThumbnailPathFromResources(hints, createTime, localID); ok {
+		return c, true
+	}
+	for _, base := range mediaBases(r.DataDir) {
+		if c, ok := resolveVideoThumbnailPathMacOS4(base, createTime, chatUsername, localID, hints); ok {
+			return c, true
+		}
+	}
+	return resolveVideoThumbnailPathLegacy(r.DataDir, createTime, chatUsername, localID, hints)
+}
+
 func (r Resolver) resolveVideoPathFromResources(hints videoHints) (videoCandidate, bool) {
 	files := queryResourceMedia(r.ResourceDBs, r.DataDir, "video", hints.keys)
 	if len(files) == 0 {
 		return videoCandidate{}, false
 	}
 	return chooseVideoCandidate(files, hints, 0, 0)
+}
+
+func (r Resolver) resolveVideoThumbnailPathFromResources(hints videoHints, createTime int64, localID int64) (videoCandidate, bool) {
+	files := queryResourceMedia(r.ResourceDBs, r.DataDir, "video", hints.keys)
+	if len(files) == 0 {
+		return videoCandidate{}, false
+	}
+	return chooseVideoThumbnailCandidate(files, hints, createTime, localID)
 }
 
 func resolveVideoPathMacOS4(wechatBase string, createTime int64, chatUsername string, localID int64, hints videoHints) (videoCandidate, bool) {
@@ -121,6 +151,18 @@ func resolveVideoPathMacOS4(wechatBase string, createTime int64, chatUsername st
 		return c, true
 	}
 	return scanVideoDir(filepath.Join(wechatBase, "Message", "MessageTemp", chatHash, "File"), hints, createTime, localID)
+}
+
+func resolveVideoThumbnailPathMacOS4(wechatBase string, createTime int64, chatUsername string, localID int64, hints videoHints) (videoCandidate, bool) {
+	if chatUsername == "" || createTime <= 0 || localID <= 0 {
+		return videoCandidate{}, false
+	}
+	chatHash := md5Hex(chatUsername)
+	videoDir := filepath.Join(wechatBase, "Message", "MessageTemp", chatHash, "Video")
+	if c, ok := scanVideoThumbnailDir(videoDir, hints, createTime, localID); ok {
+		return c, true
+	}
+	return scanVideoThumbnailDir(filepath.Join(wechatBase, "Message", "MessageTemp", chatHash, "File"), hints, createTime, localID)
 }
 
 func resolveVideoPathLegacy(dataDir string, _ string, createTime int64, chatUsername string, localID int64, hints videoHints) (videoCandidate, bool) {
@@ -152,6 +194,35 @@ func resolveVideoPathLegacy(dataDir string, _ string, createTime int64, chatUser
 	return bestVideoCandidate(candidates)
 }
 
+func resolveVideoThumbnailPathLegacy(dataDir string, createTime int64, chatUsername string, localID int64, hints videoHints) (videoCandidate, bool) {
+	accountBase := filepath.Dir(dataDir)
+	videoRoot := filepath.Join(accountBase, "msg", "video")
+	chatHash := ""
+	if chatUsername != "" {
+		chatHash = md5Hex(chatUsername)
+		if c, ok := scanVideoThumbnailDir(filepath.Join(videoRoot, chatHash), hints, createTime, localID); ok {
+			return c, true
+		}
+	}
+	if len(hints.keys) == 0 && hints.thumbSize <= 0 {
+		return videoCandidate{}, false
+	}
+	entries, err := os.ReadDir(videoRoot)
+	if err != nil {
+		return videoCandidate{}, false
+	}
+	var candidates []videoCandidate
+	for _, entry := range entries {
+		if !entry.IsDir() || entry.Name() == chatHash {
+			continue
+		}
+		if c, ok := scanVideoThumbnailDir(filepath.Join(videoRoot, entry.Name()), hints, createTime, localID); ok {
+			candidates = append(candidates, c)
+		}
+	}
+	return bestVideoCandidate(candidates)
+}
+
 func exactVideoCandidate(dir string, createTime int64, localID int64) (videoCandidate, bool) {
 	if dir == "" {
 		return videoCandidate{}, false
@@ -177,9 +248,25 @@ func exactVideoCandidate(dir string, createTime int64, localID int64) (videoCand
 }
 
 func scanVideoDir(dir string, hints videoHints, createTime int64, localID int64) (videoCandidate, bool) {
+	files, ok := collectVideoFiles(dir)
+	if !ok {
+		return videoCandidate{}, false
+	}
+	return chooseVideoCandidate(files, hints, createTime, localID)
+}
+
+func scanVideoThumbnailDir(dir string, hints videoHints, createTime int64, localID int64) (videoCandidate, bool) {
+	files, ok := collectVideoFiles(dir)
+	if !ok {
+		return videoCandidate{}, false
+	}
+	return chooseVideoThumbnailCandidate(files, hints, createTime, localID)
+}
+
+func collectVideoFiles(dir string) ([]resourceMediaFile, bool) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return videoCandidate{}, false
+		return nil, false
 	}
 	files := make([]resourceMediaFile, 0, len(entries))
 	for _, entry := range entries {
@@ -197,7 +284,7 @@ func scanVideoDir(dir string, hints videoHints, createTime int64, localID int64)
 		}
 		files = append(files, resourceMediaFile{Name: entry.Name(), Size: info.Size(), ModifyTime: info.ModTime().Unix(), Path: path})
 	}
-	return chooseVideoCandidate(files, hints, createTime, localID)
+	return files, true
 }
 
 func chooseVideoCandidate(files []resourceMediaFile, hints videoHints, createTime int64, localID int64) (videoCandidate, bool) {
@@ -238,6 +325,33 @@ func chooseVideoCandidate(files []resourceMediaFile, hints videoHints, createTim
 		main.thumbnailSourcePath = thumbPath
 	}
 	return main, true
+}
+
+func chooseVideoThumbnailCandidate(files []resourceMediaFile, hints videoHints, createTime int64, localID int64) (videoCandidate, bool) {
+	var thumbs []videoCandidate
+	for _, file := range files {
+		path := existingVideoPath(file.Path)
+		if path == "" {
+			continue
+		}
+		file.Path = path
+		file.Name = filepath.Base(path)
+		lower := strings.ToLower(file.Name)
+		if !isVideoThumbnailName(lower) {
+			continue
+		}
+		score := scoreVideoFile(file, hints, createTime, localID, true)
+		if score <= 0 {
+			continue
+		}
+		thumbs = append(thumbs, videoCandidate{
+			path:                file.Path,
+			thumbnailPath:       file.Path,
+			thumbnailSourcePath: file.Path,
+			score:               score,
+		})
+	}
+	return bestVideoCandidate(thumbs)
 }
 
 func existingVideoPath(path string) string {
