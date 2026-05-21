@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/md5"
 	"encoding/hex"
+	"encoding/xml"
 	"fmt"
 	"image"
 	"image/color"
@@ -437,6 +438,78 @@ func TestListNormalizesAppMsgLink(t *testing.T) {
 	}
 }
 
+func TestListNormalizesQuoteReferMessageDetail(t *testing.T) {
+	dir := t.TempDir()
+	db := filepath.Join(dir, "message_31.db")
+	table := TableName("amy76868")
+	quotedContent := `<?xml version="1.0"?>
+<msg>
+  <appmsg>
+    <title>壹心二期人力预算.md</title>
+    <type>6</type>
+    <appattach>
+      <totallen>1358</totallen>
+      <fileext>md</fileext>
+      <aeskey>secret-aes-key</aeskey>
+    </appattach>
+    <md5>c1545a2b5e72e5a391d6261993bbaf7a</md5>
+  </appmsg>
+</msg>`
+	content := fmt.Sprintf(`<?xml version="1.0"?>
+<msg>
+  <appmsg>
+    <title>整体还行，水分不大</title>
+    <type>57</type>
+    <refermsg>
+      <chatusr>amy76868</chatusr>
+      <type>49</type>
+      <createtime>1779336351</createtime>
+      <displayname>Amy谢慧</displayname>
+      <svrid>656050813261587710</svrid>
+      <fromusr>amy76868</fromusr>
+      <content>%s</content>
+    </refermsg>
+  </appmsg>
+</msg>`, escapeXMLTextForTest(t, quotedContent))
+	createMessageDB(t, db, table, []messageRow{{
+		LocalID:    397,
+		SortSeq:    1779347138000,
+		CreateTime: 1779347138,
+		LocalType:  (int64(messageSubTypeQuote) << 32) | int64(messageTypeShare),
+		Status:     4,
+		Content:    content,
+	}})
+
+	got, err := NewService([]string{db}).List(context.Background(), QueryOptions{Username: "amy76868"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d messages, want 1", len(got))
+	}
+	detail := got[0].ContentDetail
+	if detail["type"] != "quote" || detail["text"] != "> [引用]\n整体还行，水分不大\n> [原消息]\n[文件|壹心二期人力预算.md]" {
+		t.Fatalf("unexpected quote detail identity: %+v", detail)
+	}
+	if detail["refer_chat_username"] != "amy76868" || detail["refer_from_username"] != "amy76868" || detail["refer_server_id"] != "656050813261587710" {
+		t.Fatalf("missing refer message identity: %+v", detail)
+	}
+	if detail["refer_type"] != "49" || detail["refer_content_type"] != "file" || detail["refer_app_type"] != "6" {
+		t.Fatalf("missing refer message type detail: %+v", detail)
+	}
+	if detail["refer_text"] != "[文件|壹心二期人力预算.md]" || detail["refer_title"] != "壹心二期人力预算.md" {
+		t.Fatalf("missing quoted file title: %+v", detail)
+	}
+	if detail["refer_file_ext"] != "md" || detail["refer_total_len"] != "1358" || detail["refer_md5"] != "c1545a2b5e72e5a391d6261993bbaf7a" {
+		t.Fatalf("missing quoted file metadata: %+v", detail)
+	}
+	for key, value := range detail {
+		if strings.Contains(strings.ToLower(key), "aes") || strings.Contains(value, "secret-aes-key") {
+			t.Fatalf("secret key leaked into quote detail %s=%q: %+v", key, value, detail)
+		}
+	}
+}
+
 func TestListIncludesSourceWhenRequested(t *testing.T) {
 	dir := t.TempDir()
 	db := filepath.Join(dir, "message_31.db")
@@ -593,4 +666,13 @@ func writeMP4ForTest(t *testing.T, path string) {
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func escapeXMLTextForTest(t *testing.T, value string) string {
+	t.Helper()
+	var out strings.Builder
+	if err := xml.EscapeText(&out, []byte(value)); err != nil {
+		t.Fatal(err)
+	}
+	return out.String()
 }

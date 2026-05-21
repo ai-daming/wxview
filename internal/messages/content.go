@@ -80,9 +80,20 @@ type appMsg struct {
 	SourceUsername    string      `xml:"sourceusername"`
 	SourceDisplayName string      `xml:"sourcedisplayname"`
 	AppAttach         *appAttach  `xml:"appattach"`
+	Refer             *referMsg   `xml:"refermsg"`
 	FinderFeed        *finderFeed `xml:"finderFeed"`
 	FinderLive        *finderLive `xml:"finderLive"`
 	WCPayInfo         *wcPayInfo  `xml:"wcpayinfo"`
+}
+
+type referMsg struct {
+	ChatUser    string `xml:"chatusr"`
+	Type        string `xml:"type"`
+	CreateTime  string `xml:"createtime"`
+	DisplayName string `xml:"displayname"`
+	ServerID    string `xml:"svrid"`
+	FromUser    string `xml:"fromusr"`
+	Content     string `xml:"content"`
 }
 
 type appAttach struct {
@@ -348,7 +359,8 @@ func normalizeShare(subType int64, raw string) normalizedContent {
 		}
 		return normalizedContent{Type: "channel", Text: bracketText("视频号", app.Title), Details: detailsOrNil(details)}
 	case messageSubTypeQuote:
-		return normalizedContent{Type: "quote", Text: quoteText(app.Title), Details: detailsOrNil(details)}
+		addQuoteReferDetails(details, app.Refer)
+		return normalizedContent{Type: "quote", Text: quoteText(app.Title, details["refer_text"]), Details: detailsOrNil(details)}
 	case messageSubTypePat:
 		return normalizedContent{Type: "pat", Text: firstNonEmpty(app.Title, "[拍一拍]"), Details: detailsOrNil(details)}
 	case messageSubTypeChannelLive:
@@ -368,6 +380,44 @@ func normalizeShare(subType int64, raw string) normalizedContent {
 	default:
 		return normalizedContent{Type: "share", Text: bracketText("分享", app.Title), Details: detailsOrNil(details)}
 	}
+}
+
+func addQuoteReferDetails(details map[string]string, ref *referMsg) {
+	if ref == nil {
+		return
+	}
+	putIfNotEmpty(details, "refer_chat_username", ref.ChatUser)
+	putIfNotEmpty(details, "refer_from_username", ref.FromUser)
+	putIfNotEmpty(details, "refer_display_name", ref.DisplayName)
+	putIfNotEmpty(details, "refer_create_time", ref.CreateTime)
+	putIfNotEmpty(details, "refer_server_id", ref.ServerID)
+	putIfNotEmpty(details, "refer_type", ref.Type)
+
+	normalized, ok := normalizeReferContent(ref.Type, ref.Content)
+	if !ok {
+		return
+	}
+	putIfNotEmpty(details, "refer_content_type", normalized.Type)
+	putIfNotEmpty(details, "refer_text", normalized.Text)
+	for key, value := range normalized.Details {
+		if key == "app_type" {
+			putIfNotEmpty(details, "refer_app_type", value)
+			continue
+		}
+		putIfNotEmpty(details, "refer_"+key, value)
+	}
+}
+
+func normalizeReferContent(rawType string, rawContent string) (normalizedContent, bool) {
+	rawContent = strings.TrimSpace(rawContent)
+	if rawContent == "" {
+		return normalizedContent{}, false
+	}
+	msgType, err := strconv.ParseInt(strings.TrimSpace(rawType), 10, 64)
+	if err != nil {
+		return normalizedContent{Type: "unknown", Text: rawContent}, true
+	}
+	return normalizeContent(msgType, 0, rawContent), true
 }
 
 func parseMedia(raw string) (mediaMsg, bool) {
@@ -423,12 +473,17 @@ func bracketText(kind string, title string) string {
 	return fmt.Sprintf("[%s|%s]", kind, title)
 }
 
-func quoteText(title string) string {
+func quoteText(title string, referText ...string) string {
 	title = strings.TrimSpace(title)
-	if title == "" {
-		return "[引用]"
+	text := "[引用]"
+	if title != "" {
+		text = "> [引用]\n" + title
 	}
-	return "> [引用]\n" + title
+	refer := firstNonEmpty(referText...)
+	if refer != "" {
+		text += "\n> [原消息]\n" + refer
+	}
+	return text
 }
 
 func payText(info *wcPayInfo) string {
