@@ -284,8 +284,14 @@ type voiceMsg struct {
 
 type sysMsg struct {
 	XMLName xml.Name
-	Type    string `xml:"type,attr"`
-	Content string `xml:",chardata"`
+	Type    string       `xml:"type,attr"`
+	Content string       `xml:",chardata"`
+	Revoke  revokeSysMsg `xml:"revokemsg"`
+}
+
+type revokeSysMsg struct {
+	Content    string `xml:"content"`
+	RevokeTime string `xml:"revoketime"`
 }
 
 type voipMsg struct {
@@ -485,6 +491,15 @@ func normalizeSystem(raw string) normalizedContent {
 	var sys sysMsg
 	if err := xml.Unmarshal([]byte(text), &sys); err == nil {
 		putIfNotEmpty(details, "sysmsg_type", sys.Type)
+		if sys.Type == "revokemsg" || strings.TrimSpace(sys.Revoke.Content) != "" {
+			details["event"] = "revoke"
+			putIfNotEmpty(details, "revoke_text", sys.Revoke.Content)
+			putIfNotEmpty(details, "revoke_time", sys.Revoke.RevokeTime)
+			putIfNotEmpty(details, "revoke_actor", revokeActor(sys.Revoke.Content))
+			if strings.TrimSpace(sys.Revoke.Content) != "" {
+				text = strings.TrimSpace(sys.Revoke.Content)
+			}
+		}
 		if strings.TrimSpace(sys.Content) != "" {
 			text = strings.TrimSpace(sys.Content)
 		}
@@ -892,6 +907,19 @@ func mapURL(x string, y string, label string) string {
 		return ""
 	}
 	return fmt.Sprintf("https://maps.google.com/?q=%s,%s", x, y)
+}
+
+func revokeActor(content string) string {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return ""
+	}
+	for _, marker := range []string{" 撤回了一条消息", "撤回了一条消息"} {
+		if before, ok := strings.CutSuffix(content, marker); ok {
+			return strings.Trim(strings.TrimSpace(before), `"`)
+		}
+	}
+	return ""
 }
 
 func parsePositiveIntString(raw string) int64 {

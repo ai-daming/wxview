@@ -446,7 +446,7 @@ func TestListNormalizesAdditionalMessageTypes(t *testing.T) {
 		{LocalID: 1, SortSeq: 1001, CreateTime: 100, LocalType: 34, Content: `<msg><voicemsg voicelength="2300" format="silk" /></msg>`},
 		{LocalID: 2, SortSeq: 1002, CreateTime: 101, LocalType: 42, Content: `<msg username="wxid_bob" nickname="Bob" alias="bob_alias" province="Beijing" city="Chaoyang" smallheadimgurl="https://example.com/s.jpg" bigheadimgurl="https://example.com/b.jpg"></msg>`},
 		{LocalID: 3, SortSeq: 1003, CreateTime: 102, LocalType: 48, Content: `<msg><location x="39.9042" y="116.4074" label="北京" cityname="北京" /></msg>`},
-		{LocalID: 4, SortSeq: 1004, CreateTime: 103, LocalType: 10000, Content: `你撤回了一条消息`},
+		{LocalID: 4, SortSeq: 1004, CreateTime: 103, LocalType: 10000, Content: `<?xml version="1.0"?><sysmsg type="revokemsg"><revokemsg><content>"Player¹/马工" 撤回了一条消息</content><revoketime>0</revoketime></revokemsg></sysmsg>`},
 	})
 
 	got, err := NewService([]string{db}).List(context.Background(), QueryOptions{Username: "alice"})
@@ -465,8 +465,11 @@ func TestListNormalizesAdditionalMessageTypes(t *testing.T) {
 	if got[2].ContentDetail["type"] != "location" || !strings.Contains(got[2].ContentDetail["map_url"], "39.9042,116.4074") {
 		t.Fatalf("location detail not normalized: %+v", got[2].ContentDetail)
 	}
-	if got[3].ContentDetail["type"] != "system" || got[3].ContentDetail["event"] != "revoke" {
+	if got[3].ContentDetail["type"] != "system" || got[3].ContentDetail["event"] != "revoke" || got[3].ContentDetail["text"] != `"Player¹/马工" 撤回了一条消息` {
 		t.Fatalf("system detail not normalized: %+v", got[3].ContentDetail)
+	}
+	if got[3].ContentDetail["revoke_actor"] != "Player¹/马工" || got[3].ContentDetail["revoke_time"] != "0" || got[3].ContentDetail["sysmsg_type"] != "revokemsg" {
+		t.Fatalf("revoke system detail not normalized: %+v", got[3].ContentDetail)
 	}
 }
 
