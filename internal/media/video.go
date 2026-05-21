@@ -273,36 +273,45 @@ func bestVideoCandidate(candidates []videoCandidate) (videoCandidate, bool) {
 func scoreVideoFile(file resourceMediaFile, hints videoHints, createTime int64, localID int64, thumbnail bool) int {
 	name := strings.ToLower(filepath.Base(file.Path))
 	score := 0
+	strong := false
 	for _, key := range hints.keys {
 		if key != "" && (strings.Contains(name, key) || strings.EqualFold(file.Key, key)) {
 			score += 100
+			strong = true
 		}
 	}
 	if localID > 0 {
 		localIDText := strconv.FormatInt(localID, 10)
 		if strings.Contains(name, localIDText) {
 			score += 20
+			strong = true
 		}
 	}
 	if createTime > 0 {
 		ts := strconv.FormatInt(createTime, 10)
 		if strings.Contains(name, ts) {
 			score += 50
-		}
-		if file.ModifyTime > 0 && absInt64(file.ModifyTime-createTime) <= int64(48*time.Hour/time.Second) {
-			score += 10
+			strong = true
 		}
 	}
 	if thumbnail {
 		if hints.thumbSize > 0 && file.Size == hints.thumbSize {
 			score += 70
+			strong = true
 		}
-		return score
+	} else {
+		for size := range hints.sizes {
+			if size > 0 && file.Size == size {
+				score += 70
+				strong = true
+			}
+		}
 	}
-	for size := range hints.sizes {
-		if size > 0 && file.Size == size {
-			score += 70
-		}
+	if !strong {
+		return 0
+	}
+	if createTime > 0 && file.ModifyTime > 0 && absInt64(file.ModifyTime-createTime) <= int64(48*time.Hour/time.Second) {
+		score += 10
 	}
 	return score
 }
