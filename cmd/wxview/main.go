@@ -52,6 +52,8 @@ func run(args []string, stdout io.Writer, stderr io.Writer) error {
 	}
 	ctx := context.Background()
 	switch args[0] {
+	case "version", "--version":
+		return runVersion(args[1:], stdout)
 	case "init":
 		return runInit(ctx, args[1:], stdout)
 	case "me":
@@ -134,6 +136,7 @@ Commands:
   wxview favorites  List WeChat favorites from the local favorite cache.
   wxview articles   List official-account articles and appmsg posts.
   wxview sns        Read local Moments feed, search results, or notifications.
+  wxview version    Print the wxview version.
   wxview help CMD   Show detailed help for a command.
 
 Common examples:
@@ -160,6 +163,7 @@ Common examples:
   wxview articles --query AI --date today --format json
   wxview sns feed --date today --limit 20 --format json
   wxview sns notifications --include-read --limit 20 --format json
+  wxview version
   wxview cache status --format table
   wxview index status
   wxview index refresh
@@ -201,6 +205,7 @@ Current scope:
   wxview favorites --help
   wxview articles --help
   wxview sns --help
+  wxview version --help
   wxview index --help
   wxview cache --help
   wxview daemon --help`)
@@ -242,11 +247,24 @@ func commandHelp(command string, stdout io.Writer, stderr io.Writer) error {
 		articlesUsage(stdout)
 	case "sns":
 		snsUsage(stdout)
+	case "version":
+		versionUsage(stdout)
 	default:
 		usage(stderr)
 		return fmt.Errorf("unknown command: %s", command)
 	}
 	return nil
+}
+
+func versionUsage(w io.Writer) {
+	fmt.Fprintln(w, `wxview version - Print the wxview version
+
+Usage:
+  wxview version
+  wxview --version
+
+Output:
+  Prints the build version, for example: 0.3.0`)
 }
 
 func initUsage(w io.Writer) {
@@ -1152,6 +1170,18 @@ func hasHelp(args []string) bool {
 		}
 	}
 	return false
+}
+
+func runVersion(args []string, stdout io.Writer) error {
+	if hasHelp(args) {
+		versionUsage(stdout)
+		return nil
+	}
+	if len(args) > 0 {
+		return fmt.Errorf("unexpected version argument: %s", args[0])
+	}
+	fmt.Fprintln(stdout, buildinfo.String())
+	return nil
 }
 
 func runMe(ctx context.Context, args []string, stdout io.Writer) error {

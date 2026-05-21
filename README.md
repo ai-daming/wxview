@@ -54,6 +54,12 @@ task build
 ./bin/wxview
 ```
 
+确认版本：
+
+```sh
+./bin/wxview version
+```
+
 如果没有安装 `task`，可以直接用 Go 构建：
 
 ```sh

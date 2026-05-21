@@ -216,6 +216,21 @@ func TestLocalTimezoneNamePrefersTZ(t *testing.T) {
 	}
 }
 
+func TestVersionCommandsPrintVersionOnly(t *testing.T) {
+	for _, args := range [][]string{{"--version"}, {"version"}} {
+		var out bytes.Buffer
+		if err := run(args, &out, &out); err != nil {
+			t.Fatalf("run(%v): %v", args, err)
+		}
+		if got, want := strings.TrimSpace(out.String()), buildinfo.String(); got != want {
+			t.Fatalf("run(%v) = %q, want %q", args, got, want)
+		}
+		if strings.Contains(out.String(), "wxview - Read local WeChat data") {
+			t.Fatalf("run(%v) should not print root help:\n%s", args, out.String())
+		}
+	}
+}
+
 func TestDaemonStatusPrintsVersionWhenStopped(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	var out bytes.Buffer

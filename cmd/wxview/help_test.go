@@ -40,10 +40,29 @@ func TestRootHelpIsDescriptive(t *testing.T) {
 		"wxview favorites --help",
 		"wxview articles --help",
 		"wxview sns --help",
+		"wxview version",
+		"wxview version --help",
 		"wxview cache --help",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("root help missing %q:\n%s", want, text)
+		}
+	}
+}
+
+func TestVersionHelpIsActionable(t *testing.T) {
+	var out bytes.Buffer
+	if err := run([]string{"version", "--help"}, &out, &out); err != nil {
+		t.Fatal(err)
+	}
+	text := out.String()
+	for _, want := range []string{
+		"wxview version - Print the wxview version",
+		"wxview version",
+		"wxview --version",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("version help missing %q:\n%s", want, text)
 		}
 	}
 }

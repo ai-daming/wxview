@@ -34,6 +34,8 @@ paths automatically when the supporting caches are available.
 - `wxview me` reports the current WeChat identity Wxview will read. It supports
   `--format table|json` and `--detail paths`; default output must include a
   short `data_dir_fingerprint` but not the full source `data_dir`.
+- `wxview version` and `wxview --version` print only the build version. Keep
+  this command side-effect free so release packages can use it for smoke checks.
 - On Windows, account discovery reads `%APPDATA%\Tencent\xwechat\config\*.ini`
   and searches `xwechat_files\<account>\db_storage`. `WXVIEW_WECHAT_DB_STORAGE`
   may point directly at a `db_storage` directory when auto-detection fails.
