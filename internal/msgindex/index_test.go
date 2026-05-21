@@ -733,6 +733,42 @@ func TestCoversChatsDetectsMissingIndexedChat(t *testing.T) {
 	}
 }
 
+func TestUseForQueryAllowsReadyTimelineWithInactiveSelectedChat(t *testing.T) {
+	requireFTS5(t)
+	ctx := context.Background()
+	dir := t.TempDir()
+	db := filepath.Join(dir, "message_0.db")
+	createIndexMessageDB(t, db, map[string][]indexMessageRow{
+		messages.TableName("active@chatroom"): {{LocalID: 1, SortSeq: 1001, CreateTime: 100, Status: 4, Content: "active one"}},
+	})
+	indexPath := filepath.Join(dir, "index.db")
+	if _, err := Build(ctx, BuildOptions{
+		Account:           "wxid_test",
+		IndexPath:         indexPath,
+		MessageCachePaths: []string{db},
+		ChatUsernames:     []string{"active@chatroom"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	usable, err := UseForQuery(ctx, indexPath, []string{db}, UsabilityOptions{
+		Chats: []messages.ChatInfo{
+			{Username: "active@chatroom"},
+			{Username: "inactive@chatroom"},
+		},
+		Start:    0,
+		End:      200,
+		HasStart: true,
+		HasEnd:   true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !usable.UseIndex {
+		t.Fatalf("ready global index should serve broad timeline even when selected contacts include inactive chats: %+v", usable)
+	}
+}
+
 func TestSearchRefsFTSAndUnsupportedFallbackSignal(t *testing.T) {
 	requireFTS5(t)
 	ctx := context.Background()

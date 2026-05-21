@@ -728,10 +728,12 @@ func UseForQuery(ctx context.Context, indexPath string, messageCachePaths []stri
 			}
 		}
 	} else if len(opts.Chats) > 0 {
-		ok, err := CoversChats(ctx, indexPath, opts.Chats)
-		if err != nil || !ok {
-			out.Reason = "chat_not_covered_by_index"
-			return out, err
+		if status.QueryMode != QueryModeIndex || status.Status == StatusStale {
+			ok, err := CoversChats(ctx, indexPath, opts.Chats)
+			if err != nil || !ok {
+				out.Reason = "chat_not_covered_by_index"
+				return out, err
+			}
 		}
 		if needChatFresh {
 			chatFresh, err = chatsFreshForQuery(ctx, indexPath, currentHints, opts.Chats, opts.End, opts.HasEnd)
