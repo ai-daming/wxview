@@ -438,6 +438,38 @@ func TestListNormalizesAppMsgLink(t *testing.T) {
 	}
 }
 
+func TestListNormalizesAdditionalMessageTypes(t *testing.T) {
+	dir := t.TempDir()
+	db := filepath.Join(dir, "message_0.db")
+	table := TableName("alice")
+	createMessageDB(t, db, table, []messageRow{
+		{LocalID: 1, SortSeq: 1001, CreateTime: 100, LocalType: 34, Content: `<msg><voicemsg voicelength="2300" format="silk" /></msg>`},
+		{LocalID: 2, SortSeq: 1002, CreateTime: 101, LocalType: 42, Content: `<msg username="wxid_bob" nickname="Bob" alias="bob_alias" province="Beijing" city="Chaoyang" smallheadimgurl="https://example.com/s.jpg" bigheadimgurl="https://example.com/b.jpg"></msg>`},
+		{LocalID: 3, SortSeq: 1003, CreateTime: 102, LocalType: 48, Content: `<msg><location x="39.9042" y="116.4074" label="北京" cityname="北京" /></msg>`},
+		{LocalID: 4, SortSeq: 1004, CreateTime: 103, LocalType: 10000, Content: `你撤回了一条消息`},
+	})
+
+	got, err := NewService([]string{db}).List(context.Background(), QueryOptions{Username: "alice"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 4 {
+		t.Fatalf("got %d messages, want 4", len(got))
+	}
+	if got[0].ContentDetail["type"] != "voice" || got[0].ContentDetail["duration_seconds"] != "3" || got[0].ContentDetail["format"] != "silk" {
+		t.Fatalf("voice detail not normalized: %+v", got[0].ContentDetail)
+	}
+	if got[1].ContentDetail["type"] != "card" || got[1].ContentDetail["username"] != "wxid_bob" || got[1].ContentDetail["nickname"] != "Bob" {
+		t.Fatalf("card detail not normalized: %+v", got[1].ContentDetail)
+	}
+	if got[2].ContentDetail["type"] != "location" || !strings.Contains(got[2].ContentDetail["map_url"], "39.9042,116.4074") {
+		t.Fatalf("location detail not normalized: %+v", got[2].ContentDetail)
+	}
+	if got[3].ContentDetail["type"] != "system" || got[3].ContentDetail["event"] != "revoke" {
+		t.Fatalf("system detail not normalized: %+v", got[3].ContentDetail)
+	}
+}
+
 func TestListNormalizesQuoteReferMessageDetail(t *testing.T) {
 	dir := t.TempDir()
 	db := filepath.Join(dir, "message_31.db")
@@ -510,6 +542,50 @@ func TestListNormalizesQuoteReferMessageDetail(t *testing.T) {
 	}
 }
 
+func TestListEnrichesQuoteReferImageFromResourceDB(t *testing.T) {
+	dir := t.TempDir()
+	accountBase := filepath.Join(dir, "wxid_owner_bcc2")
+	dataDir := filepath.Join(accountBase, "db_storage")
+	imageDir := filepath.Join(accountBase, "msg", "attach", "alice-hash", "2026-05", "Img")
+	if err := os.MkdirAll(imageDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	imagePath := filepath.Join(imageDir, "abc123def456.jpg")
+	writePNGForTest(t, imagePath, 8, 9)
+	resourceDB := filepath.Join(dir, "message_resource.db")
+	createResourceImageDBForTest(t, resourceDB, "abc123def456", "abc123def456.jpg", int64(fileSizeForTest(t, imagePath)), "alice-hash", "2026-05")
+
+	db := filepath.Join(dir, "message_31.db")
+	table := TableName("amy76868")
+	referContent := `<msg><img md5="abc123def456" /></msg>`
+	content := fmt.Sprintf(`<?xml version="1.0"?>
+<msg><appmsg><title>看图</title><type>57</type><refermsg><chatusr>amy76868</chatusr><type>3</type><createtime>1779336351</createtime><content>%s</content></refermsg></appmsg></msg>`, escapeXMLTextForTest(t, referContent))
+	createMessageDB(t, db, table, []messageRow{{
+		LocalID:    398,
+		SortSeq:    1779347139000,
+		CreateTime: 1779347139,
+		LocalType:  (int64(messageSubTypeQuote) << 32) | int64(messageTypeShare),
+		Status:     4,
+		Content:    content,
+	}})
+	resolver := media.NewResolver(dataDir, filepath.Join(dir, "cache"), resourceDB)
+
+	got, err := NewService([]string{db}).List(context.Background(), QueryOptions{Username: "amy76868", MediaResolver: &resolver})
+	if err != nil {
+		t.Fatal(err)
+	}
+	detail := got[0].ContentDetail
+	if detail["refer_content_type"] != "image" || detail["refer_media_status"] != "resolved" || detail["refer_path"] != imagePath {
+		t.Fatalf("unexpected enriched quote media: %+v", detail)
+	}
+	if detail["refer_width"] != "8" || detail["refer_height"] != "9" {
+		t.Fatalf("missing quote image dimensions: %+v", detail)
+	}
+}
+
 func TestListNormalizesChatRecordDetail(t *testing.T) {
 	dir := t.TempDir()
 	db := filepath.Join(dir, "message_31.db")
@@ -559,6 +635,49 @@ func TestListNormalizesChatRecordDetail(t *testing.T) {
 		if strings.Contains(value, "thumb-secret") || strings.Contains(value, "hash-secret") || strings.Contains(strings.ToLower(key), "cdnthumbkey") {
 			t.Fatalf("internal record metadata leaked into detail %s=%q: %+v", key, value, detail)
 		}
+	}
+}
+
+func TestListEnrichesChatRecordItemMediaFromResourceDB(t *testing.T) {
+	dir := t.TempDir()
+	accountBase := filepath.Join(dir, "wxid_owner_bcc2")
+	dataDir := filepath.Join(accountBase, "db_storage")
+	imageDir := filepath.Join(accountBase, "msg", "attach", "alice-hash", "2026-05", "Img")
+	if err := os.MkdirAll(imageDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	imagePath := filepath.Join(imageDir, "thumbabc123.jpg")
+	writePNGForTest(t, imagePath, 2, 3)
+	resourceDB := filepath.Join(dir, "message_resource.db")
+	createResourceImageDBForTest(t, resourceDB, "thumbabc123", "thumbabc123.jpg", int64(fileSizeForTest(t, imagePath)), "alice-hash", "2026-05")
+
+	db := filepath.Join(dir, "message_31.db")
+	table := TableName("amy76868")
+	recordItem := `<recordinfo><title>本伟的聊天记录</title><datalist count="1"><dataitem datatype="19" dataid="mini1"><sourcename>本伟</sourcename><sourcetime>2026-05-21 12:40</sourcetime><datatitle>Peet's Cafe</datatitle><thumbfullmd5>thumbabc123</thumbfullmd5><thumbsize>80</thumbsize><appbranditem><username>gh_app@app</username><appid>wx_app</appid><sourcedisplayname>大众点评</sourcedisplayname></appbranditem></dataitem></datalist></recordinfo>`
+	content := fmt.Sprintf(`<msg><appmsg><title>本伟的聊天记录</title><type>19</type><recorditem><![CDATA[%s]]></recorditem></appmsg></msg>`, recordItem)
+	createMessageDB(t, db, table, []messageRow{{
+		LocalID:    394,
+		SortSeq:    1779338631000,
+		CreateTime: 1779338631,
+		LocalType:  (int64(messageSubTypeChatRecord) << 32) | int64(messageTypeShare),
+		Status:     4,
+		Content:    content,
+	}})
+	resolver := media.NewResolver(dataDir, filepath.Join(dir, "cache"), resourceDB)
+
+	got, err := NewService([]string{db}).List(context.Background(), QueryOptions{Username: "amy76868", MediaResolver: &resolver})
+	if err != nil {
+		t.Fatal(err)
+	}
+	detail := got[0].ContentDetail
+	if detail["record_media_count"] != "1" || detail["record_media_resolved"] != "1" {
+		t.Fatalf("unexpected record media counters: %+v", detail)
+	}
+	if !strings.Contains(detail["record_items_json"], `"media_status":"resolved"`) || !strings.Contains(detail["record_items_json"], `"thumbnail_path":"`+imagePath+`"`) {
+		t.Fatalf("record item media was not enriched: %+v", detail)
 	}
 }
 
@@ -727,4 +846,25 @@ func escapeXMLTextForTest(t *testing.T, value string) string {
 		t.Fatal(err)
 	}
 	return out.String()
+}
+
+func createResourceImageDBForTest(t *testing.T, path string, md5 string, name string, size int64, dir1 string, dir2 string) {
+	t.Helper()
+	db := sqlitetest.CreateDB(t, path, `
+CREATE TABLE dir2id(username TEXT);
+CREATE TABLE image_hardlink_info_v4(md5 TEXT, file_name TEXT, file_size INTEGER, modify_time INTEGER, dir1 INTEGER, dir2 INTEGER);
+`)
+	defer db.Close()
+	sqlitetest.Exec(t, db, "INSERT INTO dir2id(rowid, username) VALUES (1, ?);", dir1)
+	sqlitetest.Exec(t, db, "INSERT INTO dir2id(rowid, username) VALUES (2, ?);", dir2)
+	sqlitetest.Exec(t, db, "INSERT INTO image_hardlink_info_v4(md5, file_name, file_size, modify_time, dir1, dir2) VALUES (?, ?, ?, 1779338631, 1, 2);", md5, name, size)
+}
+
+func fileSizeForTest(t *testing.T, path string) int64 {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return info.Size()
 }

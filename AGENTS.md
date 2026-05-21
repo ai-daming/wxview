@@ -75,7 +75,9 @@ paths automatically when the supporting caches are available.
   current account's WeChat data directory or `~/.wxview/cache/<account>` should
   be served. Message-like JSON responses should add `content_detail.media_url`
   and `content_detail.thumbnail_url` when `path` or `thumbnail_path` are
-  available.
+  available. They should also add URLs for nested media fields such as
+  `refer_path`, `refer_thumbnail_path`, `avatar_path`, and media paths inside
+  `record_items_json`.
 - WebAPI V1 does not use asynchronous jobs. Long local reads stay synchronous
   and should rely on the server's 30-minute read/write timeout.
 - WebAPI V1 data endpoints are `/health`, `/v1/me`, `/v1/contacts`,
@@ -165,15 +167,25 @@ paths automatically when the supporting caches are available.
   convenience parsing. For image and video messages, parse useful XML metadata
   such as md5, length/play length, thumbnail dimensions, and CDN file
   identifiers there. Do not copy CDN AES keys into `content_detail`.
-- `wxview messages` resolves image, video, file, and voice usability automatically for
-  returned rows. It should resolve local media files from WeChat storage and
-  decode supported `.dat` media into `~/.wxview/cache/<account>/media/`.
+- `wxview messages` resolves image, video, file, voice, rich-message covers,
+  emoji/stickers, quoted media, forwarded chat-record item media, and card
+  avatars automatically for returned rows when supporting caches are available.
+  It should resolve local media files from WeChat storage and decode supported
+  `.dat` media into `~/.wxview/cache/<account>/media/`.
   Voice media should be decoded from `VoiceInfo.voice_data` into playable WAV
   files in the same media cache without requiring a system ffmpeg install.
   Put the result in `content_detail`, not a separate top-level `media` object:
   include `media_status`, `path`, `source_path`, `decoded`, `thumbnail`,
   `thumbnail_path`, `thumbnail_source_path`, `thumbnail_decoded`, `width`,
   `height`, and `media_reason` when available.
+- `content_detail` may include prefixed nested media fields such as
+  `refer_media_status`, `refer_path`, `refer_thumbnail_path`, and per-item media
+  fields inside `record_items_json`. Missing nested media should be reported as
+  `not_found` with a reason, not as a query error.
+- Do not copy CDN AES keys, file upload tokens, thumb keys, auth keys, or hashed
+  internal usernames into `content_detail`. Safe remote locators such as md5,
+  CDN file identifiers, ordinary URLs, titles, sizes, and app identifiers are
+  acceptable when useful for lookup or display.
 - `wxview messages` must not scan WeChat process memory. If a message key is
   missing or invalid, tell the user to run `wxview init` with process-memory
   permissions (`sudo` on macOS, Administrator terminal on Windows).

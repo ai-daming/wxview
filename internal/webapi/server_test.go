@@ -220,8 +220,12 @@ func TestAttachMediaURLsToMessages(t *testing.T) {
 	handler := NewHandler(Options{InstanceID: "test-server"}).(*handler)
 	list := []messages.Message{{
 		ContentDetail: map[string]string{
-			"path":           "/tmp/image one.jpg",
-			"thumbnail_path": "/tmp/thumb.jpg",
+			"path":                 "/tmp/image one.jpg",
+			"thumbnail_path":       "/tmp/thumb.jpg",
+			"refer_path":           "/tmp/refer file.pdf",
+			"refer_thumbnail_path": "/tmp/refer thumb.jpg",
+			"avatar_path":          "/tmp/avatar.jpg",
+			"record_items_json":    `[{"type":"image","path":"/tmp/record image.jpg","thumbnail_path":"/tmp/record thumb.jpg"}]`,
 		},
 	}}
 	handler.attachMediaURLs(list)
@@ -230,6 +234,15 @@ func TestAttachMediaURLsToMessages(t *testing.T) {
 	}
 	if list[0].ContentDetail["thumbnail_url"] != "/v1/media?path=%2Ftmp%2Fthumb.jpg" {
 		t.Fatalf("unexpected thumbnail_url: %q", list[0].ContentDetail["thumbnail_url"])
+	}
+	if list[0].ContentDetail["refer_media_url"] != "/v1/media?path=%2Ftmp%2Frefer+file.pdf" || list[0].ContentDetail["refer_thumbnail_url"] != "/v1/media?path=%2Ftmp%2Frefer+thumb.jpg" {
+		t.Fatalf("unexpected refer media urls: %+v", list[0].ContentDetail)
+	}
+	if list[0].ContentDetail["avatar_url"] != "/v1/media?path=%2Ftmp%2Favatar.jpg" {
+		t.Fatalf("unexpected avatar_url: %q", list[0].ContentDetail["avatar_url"])
+	}
+	if !strings.Contains(list[0].ContentDetail["record_items_json"], `"media_url":"/v1/media?path=%2Ftmp%2Frecord+image.jpg"`) || !strings.Contains(list[0].ContentDetail["record_items_json"], `"thumbnail_url":"/v1/media?path=%2Ftmp%2Frecord+thumb.jpg"`) {
+		t.Fatalf("record item media URLs not attached: %s", list[0].ContentDetail["record_items_json"])
 	}
 }
 

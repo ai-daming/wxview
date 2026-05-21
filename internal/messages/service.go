@@ -6,6 +6,7 @@ import (
 	"crypto/md5"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -541,9 +542,10 @@ func EnrichMediaDetails(list []Message, mediaResolver *media.Resolver) {
 				ServerID:     list[i].ServerID,
 				RawType:      list[i].RawType,
 			})
-			continue
+		} else {
+			enrichMediaDetail(&list[i], mediaResolver)
 		}
-		enrichMediaDetail(&list[i], mediaResolver)
+		enrichAdditionalMediaDetails(&list[i], mediaResolver)
 	}
 	if len(voiceRequests) == 0 {
 		return
@@ -556,6 +558,360 @@ func EnrichMediaDetails(list []Message, mediaResolver *media.Resolver) {
 		}
 		applyMediaInfo(&list[index], info)
 	}
+}
+
+func enrichAdditionalMediaDetails(msg *Message, mediaResolver *media.Resolver) {
+	if msg == nil || mediaResolver == nil || len(msg.ContentDetail) == 0 {
+		return
+	}
+	enrichTopLevelResourceMedia(msg, mediaResolver)
+	enrichCardAvatar(msg, mediaResolver)
+	enrichQuoteMedia(msg, mediaResolver)
+	enrichRecordItemsMedia(msg, mediaResolver)
+}
+
+func enrichTopLevelResourceMedia(msg *Message, mediaResolver *media.Resolver) {
+	detail := msg.ContentDetail
+	contentType := detail["type"]
+	switch contentType {
+	case "mini_program", "link", "channel", "channel_live":
+		info := mediaResolver.ResolveResource(media.ResourceRequest{
+			Kind: "cover",
+			Keys: mediaLookupKeys(
+				detail["md5"],
+				detail["thumb_url"],
+				detail["cover_url"],
+				detail["url"],
+				detail["cdn_attach_url"],
+			),
+			Name: detail["title"],
+			Size: parseInt64(detail["total_len"]),
+		})
+		applyThumbnailInfo(msg, info)
+	case "emoji", "gif":
+		info := mediaResolver.ResolveResource(media.ResourceRequest{
+			Kind: "emoji",
+			Keys: mediaLookupKeys(detail["md5"], detail["emoji_md5"], detail["url"], detail["thumb_url"]),
+			Size: parseInt64(firstMessageDetail(detail, "length", "total_len")),
+		})
+		applyMediaInfo(msg, info)
+	}
+}
+
+func enrichCardAvatar(msg *Message, mediaResolver *media.Resolver) {
+	if msg.ContentDetail["type"] != "card" || strings.TrimSpace(msg.ContentDetail["username"]) == "" {
+		return
+	}
+	headDB := filepath.Join(filepath.Dir(mediaResolver.CacheDir), "head_image", "head_image.db")
+	info := media.ResolveAvatar(headDB, msg.ContentDetail["username"], mediaResolver.CacheDir)
+	if info.Status == "" {
+		return
+	}
+	msg.ContentDetail["avatar_status"] = info.Status
+	if info.Path != "" {
+		msg.ContentDetail["avatar_path"] = info.Path
+	}
+	if info.Reason != "" {
+		msg.ContentDetail["avatar_reason"] = info.Reason
+	}
+}
+
+func enrichQuoteMedia(msg *Message, mediaResolver *media.Resolver) {
+	if msg.ContentDetail["type"] != "quote" {
+		return
+	}
+	ref, ok := quoteReferFromMessage(msg)
+	if !ok {
+		info := resourceInfoFromDetail(mediaResolver, msg.ContentDetail, "refer_", msg.CreateTime, 0)
+		applyPrefixedMediaInfo(msg.ContentDetail, "refer_", info, useThumbnailForContentType(msg.ContentDetail["refer_content_type"]))
+		return
+	}
+	info := resolveReferMedia(mediaResolver, msg, ref)
+	applyPrefixedMediaInfo(msg.ContentDetail, "refer_", info, useThumbnailForContentType(msg.ContentDetail["refer_content_type"]))
+}
+
+func quoteReferFromMessage(msg *Message) (referMsg, bool) {
+	if msg == nil {
+		return referMsg{}, false
+	}
+	body := messageBodyForMessage(msg.RawContent, msg.IsChatroom)
+	mediaMsg, ok := parseMedia(body)
+	if !ok || mediaMsg.App.Refer == nil {
+		return referMsg{}, false
+	}
+	return *mediaMsg.App.Refer, true
+}
+
+func resolveReferMedia(mediaResolver *media.Resolver, msg *Message, ref referMsg) media.Info {
+	msgType := parseInt64(ref.Type)
+	refContent := strings.TrimSpace(ref.Content)
+	if msgType == 0 || refContent == "" {
+		return resourceInfoFromDetail(mediaResolver, msg.ContentDetail, "refer_", msg.CreateTime, 0)
+	}
+	refCreateTime := parseInt64(ref.CreateTime)
+	refLocalID := parseInt64(ref.LocalID)
+	refServerID := parseInt64(ref.ServerID)
+	refChat := firstMessageText(ref.ChatUser, msg.ChatUsername)
+	refSubType := parseInt64(msg.ContentDetail["refer_app_type"])
+	rawType := msgType
+	if msgType == messageTypeShare && refSubType > 0 {
+		rawType = (refSubType << 32) | msgType
+	}
+	kind := mediaKindForMessageType(msgType, refSubType)
+	if kind != "" {
+		info := mediaResolver.Resolve(kind, refChat, refLocalID, refServerID, refCreateTime, rawType, refContent, strings.HasSuffix(refChat, "@chatroom"))
+		if info.Status == "resolved" {
+			return info
+		}
+		fallback := resourceInfoFromDetail(mediaResolver, msg.ContentDetail, "refer_", refCreateTime, refLocalID)
+		if fallback.Status != "" {
+			return fallback
+		}
+		return info
+	}
+	return resourceInfoFromDetail(mediaResolver, msg.ContentDetail, "refer_", refCreateTime, refLocalID)
+}
+
+func enrichRecordItemsMedia(msg *Message, mediaResolver *media.Resolver) {
+	raw := strings.TrimSpace(msg.ContentDetail["record_items_json"])
+	if raw == "" {
+		return
+	}
+	var items []recordItemDetail
+	if err := json.Unmarshal([]byte(raw), &items); err != nil || len(items) == 0 {
+		return
+	}
+	mediaCount := 0
+	resolvedCount := 0
+	for i := range items {
+		info := resolveRecordItemMedia(mediaResolver, items[i])
+		if info.Status == "" {
+			continue
+		}
+		mediaCount++
+		if info.Status == "resolved" {
+			resolvedCount++
+		}
+		applyRecordItemMediaInfo(&items[i], info, useThumbnailForContentType(items[i].Type))
+	}
+	if mediaCount == 0 {
+		return
+	}
+	data, err := json.Marshal(items)
+	if err != nil {
+		return
+	}
+	msg.ContentDetail["record_items_json"] = string(data)
+	msg.ContentDetail["record_media_count"] = strconv.Itoa(mediaCount)
+	msg.ContentDetail["record_media_resolved"] = strconv.Itoa(resolvedCount)
+}
+
+func resolveRecordItemMedia(mediaResolver *media.Resolver, item recordItemDetail) media.Info {
+	kind := resourceKindForContentType(item.Type)
+	if kind == "" {
+		return media.Info{}
+	}
+	return mediaResolver.ResolveResource(media.ResourceRequest{
+		Kind:       kind,
+		Keys:       mediaLookupKeys(item.MD5, item.ThumbMD5, item.ThumbURL, item.DataID),
+		Name:       firstMessageText(item.Title, item.Desc),
+		Size:       parseInt64(item.Size),
+		CreateTime: parseInt64(item.SrcMsgCreateTime),
+		LocalID:    parseInt64(item.SrcMsgLocalID),
+	})
+}
+
+func resourceInfoFromDetail(mediaResolver *media.Resolver, detail map[string]string, prefix string, createTime int64, localID int64) media.Info {
+	contentType := detail[prefix+"content_type"]
+	if contentType == "" && prefix == "" {
+		contentType = detail["type"]
+	}
+	kind := resourceKindForContentType(contentType)
+	if kind == "" {
+		return media.Info{}
+	}
+	return mediaResolver.ResolveResource(media.ResourceRequest{
+		Kind: kind,
+		Keys: mediaLookupKeys(
+			detail[prefix+"md5"],
+			detail[prefix+"emoji_md5"],
+			detail[prefix+"thumb_url"],
+			detail[prefix+"cover_url"],
+			detail[prefix+"url"],
+			detail[prefix+"cdn_attach_url"],
+		),
+		Name:       firstMessageDetail(detail, prefix+"title", prefix+"text", "title"),
+		Size:       parseInt64(firstMessageDetail(detail, prefix+"total_len", prefix+"length")),
+		CreateTime: createTime,
+		LocalID:    localID,
+	})
+}
+
+func mediaLookupKeys(values ...string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		out = append(out, value)
+	}
+	return out
+}
+
+func applyThumbnailInfo(msg *Message, info media.Info) {
+	if info.Status == "" {
+		return
+	}
+	if msg.ContentDetail == nil {
+		msg.ContentDetail = map[string]string{}
+	}
+	msg.ContentDetail["media_status"] = info.Status
+	msg.ContentDetail["thumbnail"] = "true"
+	if info.Path != "" {
+		msg.ContentDetail["thumbnail_path"] = info.Path
+	}
+	if info.SourcePath != "" {
+		msg.ContentDetail["thumbnail_source_path"] = info.SourcePath
+	}
+	if info.Decoded {
+		msg.ContentDetail["thumbnail_decoded"] = fmt.Sprintf("%t", info.Decoded)
+	}
+	if info.Width > 0 {
+		msg.ContentDetail["width"] = fmt.Sprintf("%d", info.Width)
+	}
+	if info.Height > 0 {
+		msg.ContentDetail["height"] = fmt.Sprintf("%d", info.Height)
+	}
+	if info.Reason != "" {
+		msg.ContentDetail["media_reason"] = info.Reason
+	}
+}
+
+func applyPrefixedMediaInfo(detail map[string]string, prefix string, info media.Info, thumbnail bool) {
+	if info.Status == "" || detail == nil {
+		return
+	}
+	detail[prefix+"media_status"] = info.Status
+	if thumbnail {
+		if info.Path != "" {
+			detail[prefix+"thumbnail_path"] = info.Path
+		}
+		if info.SourcePath != "" {
+			detail[prefix+"thumbnail_source_path"] = info.SourcePath
+		}
+		if info.Decoded {
+			detail[prefix+"thumbnail_decoded"] = fmt.Sprintf("%t", info.Decoded)
+		}
+	} else {
+		if info.Path != "" {
+			detail[prefix+"path"] = info.Path
+		}
+		if info.SourcePath != "" {
+			detail[prefix+"source_path"] = info.SourcePath
+		}
+	}
+	if info.ThumbnailPath != "" {
+		detail[prefix+"thumbnail_path"] = info.ThumbnailPath
+	}
+	if info.ThumbnailSourcePath != "" {
+		detail[prefix+"thumbnail_source_path"] = info.ThumbnailSourcePath
+	}
+	if info.Width > 0 {
+		detail[prefix+"width"] = fmt.Sprintf("%d", info.Width)
+	}
+	if info.Height > 0 {
+		detail[prefix+"height"] = fmt.Sprintf("%d", info.Height)
+	}
+	if info.Reason != "" {
+		detail[prefix+"media_reason"] = info.Reason
+	}
+}
+
+func applyRecordItemMediaInfo(item *recordItemDetail, info media.Info, thumbnail bool) {
+	if item == nil || info.Status == "" {
+		return
+	}
+	item.MediaStatus = info.Status
+	if thumbnail {
+		item.ThumbnailPath = firstMessageText(info.Path, info.ThumbnailPath)
+	} else {
+		item.Path = info.Path
+		item.SourcePath = info.SourcePath
+		if info.ThumbnailPath != "" {
+			item.ThumbnailPath = info.ThumbnailPath
+		}
+	}
+	if info.Reason != "" {
+		item.MediaReason = info.Reason
+	}
+	if info.Width > 0 {
+		item.Width = strconv.Itoa(info.Width)
+	}
+	if info.Height > 0 {
+		item.Height = strconv.Itoa(info.Height)
+	}
+}
+
+func resourceKindForContentType(contentType string) string {
+	switch contentType {
+	case "image":
+		return "image"
+	case "video":
+		return "video"
+	case "file":
+		return "file"
+	case "emoji", "gif":
+		return "emoji"
+	case "mini_program", "link", "channel", "channel_live", "appmsg":
+		return "cover"
+	default:
+		return ""
+	}
+}
+
+func useThumbnailForContentType(contentType string) bool {
+	switch contentType {
+	case "mini_program", "link", "channel", "channel_live", "appmsg":
+		return true
+	default:
+		return false
+	}
+}
+
+func messageBodyForMessage(content string, isChatroom bool) string {
+	if isChatroom {
+		if _, body, ok := strings.Cut(content, ":\n"); ok {
+			return body
+		}
+	}
+	return content
+}
+
+func firstMessageDetail(detail map[string]string, keys ...string) string {
+	for _, key := range keys {
+		if value := strings.TrimSpace(detail[key]); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func firstMessageText(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func parseInt64(raw string) int64 {
+	value, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+	if err != nil {
+		return 0
+	}
+	return value
 }
 
 func defaultString(value string, fallback string) string {

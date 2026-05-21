@@ -1,6 +1,7 @@
 package webapi
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -54,7 +55,47 @@ func (h *handler) attachMediaURLs(list []messages.Message) {
 		if path := strings.TrimSpace(detail["thumbnail_path"]); path != "" {
 			detail["thumbnail_url"] = mediaURL(path)
 		}
+		if path := strings.TrimSpace(detail["refer_path"]); path != "" {
+			detail["refer_media_url"] = mediaURL(path)
+		}
+		if path := strings.TrimSpace(detail["refer_thumbnail_path"]); path != "" {
+			detail["refer_thumbnail_url"] = mediaURL(path)
+		}
+		if path := strings.TrimSpace(detail["avatar_path"]); path != "" {
+			detail["avatar_url"] = mediaURL(path)
+		}
+		attachRecordItemMediaURLs(detail)
 	}
+}
+
+func attachRecordItemMediaURLs(detail map[string]string) {
+	raw := strings.TrimSpace(detail["record_items_json"])
+	if raw == "" {
+		return
+	}
+	var items []map[string]any
+	if err := json.Unmarshal([]byte(raw), &items); err != nil {
+		return
+	}
+	changed := false
+	for _, item := range items {
+		if path, ok := item["path"].(string); ok && strings.TrimSpace(path) != "" {
+			item["media_url"] = mediaURL(path)
+			changed = true
+		}
+		if path, ok := item["thumbnail_path"].(string); ok && strings.TrimSpace(path) != "" {
+			item["thumbnail_url"] = mediaURL(path)
+			changed = true
+		}
+	}
+	if !changed {
+		return
+	}
+	data, err := json.Marshal(items)
+	if err != nil {
+		return
+	}
+	detail["record_items_json"] = string(data)
 }
 
 func mediaURL(path string) string {

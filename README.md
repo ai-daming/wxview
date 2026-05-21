@@ -212,8 +212,14 @@ HTTP 接口固定返回 JSON。业务查询返回 `{meta, items}`，`meta` 里�
 `POST /v1/cache/refresh`。
 
 消息类接口会在 `content_detail.path` / `thumbnail_path` 存在时追加 `media_url` /
-`thumbnail_url`，可直接通过本机 HTTP 读取媒体文件。媒体接口是内部 loopback 辅助，只服务当前
-账号微信数据目录和 `~/.wxview/cache/<account>` 下的绝对路径。
+`thumbnail_url`，也会处理引用消息的 `refer_path` / `refer_thumbnail_path`、合并聊天记录
+`record_items_json` 内 item 的媒体路径，以及名片头像 `avatar_path`。媒体接口是内部 loopback
+辅助，只服务当前账号微信数据目录和 `~/.wxview/cache/<account>` 下的绝对路径。
+
+消息 `content_detail` 会尽量结构化常见类型：图片、视频、文件、语音、表情、小程序、链接/文章、
+视频号/直播、引用、合并聊天记录、名片、位置、系统事件、转账和红包。图片/视频/文件/语音/封面/
+表情会尽量解析本地媒体路径；找不到媒体时保留 `media_status=not_found` 和 `media_reason`，
+查询本身不失败。输出不会复制 CDN AES key、fileuploadtoken、cdnthumbkey 等敏感 key。
 
 V1 不做异步 job。宽查询和本地媒体读取仍是同步 HTTP 请求，服务端读写超时设置为 30 分钟。
 

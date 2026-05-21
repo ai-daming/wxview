@@ -66,9 +66,18 @@ func (c normalizedContent) Detail() map[string]string {
 
 type mediaMsg struct {
 	XMLName  xml.Name    `xml:"msg"`
+	Username string      `xml:"username,attr"`
+	Nickname string      `xml:"nickname,attr"`
+	Alias    string      `xml:"alias,attr"`
+	Province string      `xml:"province,attr"`
+	City     string      `xml:"city,attr"`
+	Sex      string      `xml:"sex,attr"`
+	SmallImg string      `xml:"smallheadimgurl,attr"`
+	BigImg   string      `xml:"bigheadimgurl,attr"`
 	App      appMsg      `xml:"appmsg"`
 	Image    imageMsg    `xml:"img"`
 	Video    videoMsg    `xml:"videomsg"`
+	Voice    voiceMsg    `xml:"voicemsg"`
 	Location locationMsg `xml:"location"`
 	Emoji    emojiMsg    `xml:"emoji"`
 }
@@ -78,12 +87,17 @@ type appMsg struct {
 	Title             string      `xml:"title"`
 	Des               string      `xml:"des"`
 	URL               string      `xml:"url"`
+	LowURL            string      `xml:"lowurl"`
+	DataURL           string      `xml:"dataurl"`
+	LowDataURL        string      `xml:"lowdataurl"`
+	ThumbURL          string      `xml:"thumburl"`
 	MD5               string      `xml:"md5"`
 	SourceUsername    string      `xml:"sourceusername"`
 	SourceDisplayName string      `xml:"sourcedisplayname"`
 	AppAttach         *appAttach  `xml:"appattach"`
 	Refer             *referMsg   `xml:"refermsg"`
 	RecordItem        string      `xml:"recorditem"`
+	WeAppInfo         *weAppInfo  `xml:"weappinfo"`
 	FinderFeed        *finderFeed `xml:"finderFeed"`
 	FinderLive        *finderLive `xml:"finderLive"`
 	WCPayInfo         *wcPayInfo  `xml:"wcpayinfo"`
@@ -92,6 +106,7 @@ type appMsg struct {
 type referMsg struct {
 	ChatUser    string `xml:"chatusr"`
 	Type        string `xml:"type"`
+	LocalID     string `xml:"msgid"`
 	CreateTime  string `xml:"createtime"`
 	DisplayName string `xml:"displayname"`
 	ServerID    string `xml:"svrid"`
@@ -100,8 +115,21 @@ type referMsg struct {
 }
 
 type appAttach struct {
-	FileExt  string `xml:"fileext"`
-	TotalLen string `xml:"totallen"`
+	FileExt      string `xml:"fileext"`
+	TotalLen     string `xml:"totallen"`
+	AttachID     string `xml:"attachid"`
+	CDNAttachURL string `xml:"cdnattachurl"`
+}
+
+type weAppInfo struct {
+	Username          string `xml:"username"`
+	AppID             string `xml:"appid"`
+	PagePath          string `xml:"pagepath"`
+	SourceDisplayName string `xml:"sourcedisplayname"`
+	Type              string `xml:"type"`
+	PkgType           string `xml:"pkgtype"`
+	Version           string `xml:"version"`
+	IconURL           string `xml:"iconurl"`
 }
 
 type recordInfo struct {
@@ -117,10 +145,18 @@ type recordDataList struct {
 
 type recordDataItem struct {
 	DataType         string             `xml:"datatype,attr"`
+	DataID           string             `xml:"dataid,attr"`
 	SourceName       string             `xml:"sourcename"`
+	SourceHeadURL    string             `xml:"sourceheadurl"`
 	SourceTime       string             `xml:"sourcetime"`
 	DataTitle        string             `xml:"datatitle"`
 	DataDesc         string             `xml:"datadesc"`
+	ThumbSize        string             `xml:"thumbsize"`
+	ThumbFullMD5     string             `xml:"thumbfullmd5"`
+	CDNThumbURL      string             `xml:"cdnthumburl"`
+	DataFmt          string             `xml:"datafmt"`
+	DataSize         string             `xml:"datasize"`
+	FullMD5          string             `xml:"fullmd5"`
 	SrcMsgLocalID    string             `xml:"srcMsgLocalid"`
 	SrcMsgCreateTime string             `xml:"srcMsgCreateTime"`
 	AppBrand         recordAppBrandItem `xml:"appbranditem"`
@@ -136,15 +172,27 @@ type recordAppBrandItem struct {
 type recordItemDetail struct {
 	Type             string `json:"type,omitempty"`
 	DataType         string `json:"data_type,omitempty"`
+	DataID           string `json:"data_id,omitempty"`
 	SourceName       string `json:"source_name,omitempty"`
 	SourceTime       string `json:"source_time,omitempty"`
 	Title            string `json:"title,omitempty"`
 	Desc             string `json:"desc,omitempty"`
+	ThumbURL         string `json:"thumb_url,omitempty"`
+	ThumbMD5         string `json:"thumb_md5,omitempty"`
+	MD5              string `json:"md5,omitempty"`
+	Size             string `json:"size,omitempty"`
 	AppName          string `json:"app_name,omitempty"`
 	AppID            string `json:"app_id,omitempty"`
 	AppUsername      string `json:"app_username,omitempty"`
 	SrcMsgLocalID    string `json:"src_msg_local_id,omitempty"`
 	SrcMsgCreateTime string `json:"src_msg_create_time,omitempty"`
+	MediaStatus      string `json:"media_status,omitempty"`
+	Path             string `json:"path,omitempty"`
+	SourcePath       string `json:"source_path,omitempty"`
+	ThumbnailPath    string `json:"thumbnail_path,omitempty"`
+	MediaReason      string `json:"media_reason,omitempty"`
+	Width            string `json:"width,omitempty"`
+	Height           string `json:"height,omitempty"`
 }
 
 type imageMsg struct {
@@ -217,7 +265,27 @@ type locationMsg struct {
 }
 
 type emojiMsg struct {
-	CdnURL string `xml:"cdnurl,attr"`
+	CdnURL    string `xml:"cdnurl,attr"`
+	MD5       string `xml:"md5,attr"`
+	Len       string `xml:"len,attr"`
+	Width     string `xml:"width,attr"`
+	Height    string `xml:"height,attr"`
+	Type      string `xml:"type,attr"`
+	ProductID string `xml:"productid,attr"`
+	AuthKey   string `xml:"authkey,attr"`
+	AESKey    string `xml:"aeskey,attr"`
+}
+
+type voiceMsg struct {
+	VoiceLength string `xml:"voicelength,attr"`
+	Length      string `xml:"length,attr"`
+	Format      string `xml:"format,attr"`
+}
+
+type sysMsg struct {
+	XMLName xml.Name
+	Type    string `xml:"type,attr"`
+	Content string `xml:",chardata"`
 }
 
 type voipMsg struct {
@@ -241,16 +309,13 @@ func normalizeContent(msgType int64, subType int64, raw string) normalizedConten
 	case messageTypeImage:
 		return normalizeImage(raw)
 	case messageTypeVoice:
-		return normalizedContent{Type: "voice", Text: "[语音]"}
+		return normalizeVoice(raw)
 	case messageTypeCard:
-		return normalizedContent{Type: "card", Text: "[名片]"}
+		return normalizeCard(raw)
 	case messageTypeVideo:
 		return normalizeVideo(raw)
 	case messageTypeAnimation:
-		if msg, ok := parseMedia(raw); ok && msg.Emoji.CdnURL != "" {
-			return normalizedContent{Type: "emoji", Text: "[动画表情]", Details: map[string]string{"url": msg.Emoji.CdnURL}}
-		}
-		return normalizedContent{Type: "emoji", Text: "[动画表情]"}
+		return normalizeEmoji(raw)
 	case messageTypeLocation:
 		return normalizeLocation(raw)
 	case messageTypeShare:
@@ -258,7 +323,7 @@ func normalizeContent(msgType int64, subType int64, raw string) normalizedConten
 	case messageTypeVOIP:
 		return normalizeVOIP(raw)
 	case messageTypeSystem:
-		return normalizedContent{Type: "system", Text: strings.TrimSpace(raw)}
+		return normalizeSystem(raw)
 	default:
 		return normalizedContent{Type: "unknown", Text: strings.TrimSpace(raw)}
 	}
@@ -286,6 +351,54 @@ func normalizeVOIP(raw string) normalizedContent {
 	}
 
 	return normalizedContent{Type: "voip", Text: bracketText("语音通话", callText), Details: detailsOrNil(details)}
+}
+
+func normalizeVoice(raw string) normalizedContent {
+	msg, ok := parseMedia(raw)
+	if !ok {
+		return normalizedContent{Type: "voice", Text: "[语音]"}
+	}
+	details := map[string]string{}
+	putIfNonZero(details, "voice_length_ms", msg.Voice.VoiceLength)
+	putIfNonZero(details, "length", msg.Voice.Length)
+	putIfNotEmpty(details, "format", msg.Voice.Format)
+	if ms := parsePositiveIntString(msg.Voice.VoiceLength); ms > 0 {
+		details["duration_seconds"] = strconv.FormatInt((ms+999)/1000, 10)
+	}
+	return normalizedContent{Type: "voice", Text: "[语音]", Details: detailsOrNil(details)}
+}
+
+func normalizeCard(raw string) normalizedContent {
+	msg, ok := parseMedia(raw)
+	if !ok {
+		return normalizedContent{Type: "card", Text: "[名片]"}
+	}
+	details := map[string]string{}
+	putIfNotEmpty(details, "username", msg.Username)
+	putIfNotEmpty(details, "nickname", msg.Nickname)
+	putIfNotEmpty(details, "alias", msg.Alias)
+	putIfNotEmpty(details, "province", msg.Province)
+	putIfNotEmpty(details, "city", msg.City)
+	putIfNotEmpty(details, "sex", msg.Sex)
+	putIfNotEmpty(details, "small_head_url", msg.SmallImg)
+	putIfNotEmpty(details, "big_head_url", msg.BigImg)
+	return normalizedContent{Type: "card", Text: bracketText("名片", firstNonEmpty(msg.Nickname, msg.Alias, msg.Username)), Details: detailsOrNil(details)}
+}
+
+func normalizeEmoji(raw string) normalizedContent {
+	msg, ok := parseMedia(raw)
+	if !ok {
+		return normalizedContent{Type: "emoji", Text: "[动画表情]"}
+	}
+	details := map[string]string{}
+	putIfNotEmpty(details, "url", msg.Emoji.CdnURL)
+	putIfNotEmpty(details, "md5", msg.Emoji.MD5)
+	putIfNonZero(details, "length", msg.Emoji.Len)
+	putIfNonZero(details, "width", msg.Emoji.Width)
+	putIfNonZero(details, "height", msg.Emoji.Height)
+	putIfNotEmpty(details, "emoji_type", msg.Emoji.Type)
+	putIfNotEmpty(details, "product_id", msg.Emoji.ProductID)
+	return normalizedContent{Type: "emoji", Text: "[动画表情]", Details: detailsOrNil(details)}
 }
 
 func normalizeImage(raw string) normalizedContent {
@@ -348,10 +461,35 @@ func normalizeLocation(raw string) normalizedContent {
 	putIfNotEmpty(details, "city", msg.Location.CityName)
 	putIfNotEmpty(details, "x", msg.Location.X)
 	putIfNotEmpty(details, "y", msg.Location.Y)
+	putIfNotEmpty(details, "map_url", mapURL(msg.Location.X, msg.Location.Y, msg.Location.Label))
 	if len(parts) == 0 {
 		return normalizedContent{Type: "location", Text: "[位置]", Details: detailsOrNil(details)}
 	}
 	return normalizedContent{Type: "location", Text: fmt.Sprintf("[位置|%s]", strings.Join(parts, "|")), Details: detailsOrNil(details)}
+}
+
+func normalizeSystem(raw string) normalizedContent {
+	text := strings.TrimSpace(raw)
+	details := map[string]string{}
+	if strings.Contains(text, "撤回") {
+		details["event"] = "revoke"
+	} else if strings.Contains(text, "群公告") {
+		details["event"] = "room_announcement"
+	} else if strings.Contains(text, "邀请") || strings.Contains(text, "加入了群聊") {
+		details["event"] = "room_invite"
+	} else if strings.Contains(text, "移出") || strings.Contains(text, "移出了群聊") {
+		details["event"] = "room_remove"
+	} else if strings.Contains(text, "修改群名") || strings.Contains(text, "群聊名称") {
+		details["event"] = "room_rename"
+	}
+	var sys sysMsg
+	if err := xml.Unmarshal([]byte(text), &sys); err == nil {
+		putIfNotEmpty(details, "sysmsg_type", sys.Type)
+		if strings.TrimSpace(sys.Content) != "" {
+			text = strings.TrimSpace(sys.Content)
+		}
+	}
+	return normalizedContent{Type: "system", Text: text, Details: detailsOrNil(details)}
 }
 
 func normalizeShare(subType int64, raw string) normalizedContent {
@@ -368,18 +506,23 @@ func normalizeShare(subType int64, raw string) normalizedContent {
 	putIfNotEmpty(details, "title", strings.TrimSpace(app.Title))
 	putIfNotEmpty(details, "desc", strings.TrimSpace(app.Des))
 	putIfNotEmpty(details, "url", strings.TrimSpace(app.URL))
+	putIfNotEmpty(details, "low_url", strings.TrimSpace(app.LowURL))
+	putIfNotEmpty(details, "data_url", strings.TrimSpace(app.DataURL))
+	putIfNotEmpty(details, "low_data_url", strings.TrimSpace(app.LowDataURL))
+	putIfNotEmpty(details, "thumb_url", strings.TrimSpace(app.ThumbURL))
+	putIfNotEmpty(details, "md5", strings.TrimSpace(app.MD5))
 	putIfNotEmpty(details, "source_username", strings.TrimSpace(app.SourceUsername))
 	putIfNotEmpty(details, "source_display_name", strings.TrimSpace(app.SourceDisplayName))
+	if app.AppAttach != nil {
+		putIfNotEmpty(details, "file_ext", app.AppAttach.FileExt)
+		putIfNotEmpty(details, "total_len", app.AppAttach.TotalLen)
+		putIfNotEmpty(details, "cdn_attach_url", app.AppAttach.CDNAttachURL)
+	}
 
 	switch appType {
 	case messageSubTypeText, messageSubTypeLink, messageSubTypeLink2:
 		return normalizedContent{Type: "link", Text: linkText(app.Title, app.Des, app.URL), Details: detailsOrNil(details)}
 	case messageSubTypeFile:
-		putIfNotEmpty(details, "md5", app.MD5)
-		if app.AppAttach != nil {
-			putIfNotEmpty(details, "file_ext", app.AppAttach.FileExt)
-			putIfNotEmpty(details, "total_len", app.AppAttach.TotalLen)
-		}
 		return normalizedContent{Type: "file", Text: bracketText("文件", app.Title), Details: detailsOrNil(details)}
 	case messageSubTypeGIF:
 		if app.URL != "" {
@@ -387,11 +530,16 @@ func normalizeShare(subType int64, raw string) normalizedContent {
 		} else if msg.Emoji.CdnURL != "" {
 			putIfNotEmpty(details, "url", msg.Emoji.CdnURL)
 		}
+		putIfNotEmpty(details, "emoji_md5", msg.Emoji.MD5)
+		putIfNonZero(details, "width", msg.Emoji.Width)
+		putIfNonZero(details, "height", msg.Emoji.Height)
+		putIfNonZero(details, "length", msg.Emoji.Len)
 		return normalizedContent{Type: "gif", Text: "[GIF表情]", Details: detailsOrNil(details)}
 	case messageSubTypeChatRecord:
 		return normalizeChatRecord(app, details)
 	case messageSubTypeMiniProgram, messageSubTypeMiniProgram2:
 		title := firstNonEmpty(app.SourceDisplayName, app.Title)
+		addWeAppDetails(details, app.WeAppInfo)
 		return normalizedContent{Type: "mini_program", Text: linkLikeText("小程序", title, app.URL), Details: detailsOrNil(details)}
 	case messageSubTypeChannel:
 		if app.FinderFeed != nil {
@@ -403,6 +551,7 @@ func normalizeShare(subType int64, raw string) normalizedContent {
 			putIfNotEmpty(details, "title", title)
 			putIfNotEmpty(details, "url", url)
 			putIfNotEmpty(details, "nickname", app.FinderFeed.Nickname)
+			putIfNotEmpty(details, "cover_url", url)
 			return normalizedContent{Type: "channel", Text: linkLikeText("视频号", title, url), Details: detailsOrNil(details)}
 		}
 		return normalizedContent{Type: "channel", Text: bracketText("视频号", app.Title), Details: detailsOrNil(details)}
@@ -416,14 +565,18 @@ func normalizeShare(subType int64, raw string) normalizedContent {
 		if app.FinderLive != nil && app.FinderLive.Desc != "" {
 			title = app.FinderLive.Desc
 		}
+		putIfNotEmpty(details, "live_desc", title)
 		return normalizedContent{Type: "channel_live", Text: bracketText("视频号直播", title), Details: detailsOrNil(details)}
 	case messageSubTypeMusic:
 		return normalizedContent{Type: "music", Text: linkLikeText("音乐", app.Title, app.URL), Details: detailsOrNil(details)}
 	case messageSubTypePay:
+		addPayDetails(details, app.WCPayInfo)
 		return normalizedContent{Type: "pay", Text: payText(app.WCPayInfo), Details: detailsOrNil(details)}
 	case messageSubTypeRedEnvelope:
+		putIfNotEmpty(details, "red_envelope_title", app.Title)
 		return normalizedContent{Type: "red_envelope", Text: "[红包]", Details: detailsOrNil(details)}
 	case messageSubTypeRedEnvelopeCover:
+		putIfNotEmpty(details, "red_envelope_title", app.Title)
 		return normalizedContent{Type: "red_envelope_cover", Text: "[红包封面]", Details: detailsOrNil(details)}
 	default:
 		return normalizedContent{Type: "share", Text: bracketText("分享", app.Title), Details: detailsOrNil(details)}
@@ -451,6 +604,31 @@ func normalizeChatRecord(app appMsg, details map[string]string) normalizedConten
 		putIfNotEmpty(details, "record_text", strings.TrimSpace(app.Des))
 	}
 	return normalizedContent{Type: "chat_record", Text: chatRecordText(title, recordText), Details: detailsOrNil(details)}
+}
+
+func addWeAppDetails(details map[string]string, info *weAppInfo) {
+	if info == nil {
+		return
+	}
+	putIfNotEmpty(details, "app_username", info.Username)
+	putIfNotEmpty(details, "app_id", info.AppID)
+	putIfNotEmpty(details, "page_path", info.PagePath)
+	putIfNotEmpty(details, "app_name", info.SourceDisplayName)
+	putIfNotEmpty(details, "appbrand_type", info.Type)
+	putIfNotEmpty(details, "pkg_type", info.PkgType)
+	putIfNotEmpty(details, "version", info.Version)
+	putIfNotEmpty(details, "icon_url", info.IconURL)
+}
+
+func addPayDetails(details map[string]string, info *wcPayInfo) {
+	if info == nil {
+		return
+	}
+	if info.PaySubType != 0 {
+		details["pay_subtype"] = strconv.Itoa(info.PaySubType)
+	}
+	putIfNotEmpty(details, "fee_desc", info.FeeDesc)
+	putIfNotEmpty(details, "pay_memo", info.PayMemo)
 }
 
 func addQuoteReferDetails(details map[string]string, ref *referMsg) {
@@ -564,10 +742,15 @@ func recordItemsJSON(items []recordDataItem) string {
 		out = append(out, recordItemDetail{
 			Type:             recordItemType(item),
 			DataType:         strings.TrimSpace(item.DataType),
+			DataID:           strings.TrimSpace(item.DataID),
 			SourceName:       strings.TrimSpace(item.SourceName),
 			SourceTime:       strings.TrimSpace(item.SourceTime),
 			Title:            strings.TrimSpace(item.DataTitle),
 			Desc:             strings.TrimSpace(item.DataDesc),
+			ThumbURL:         strings.TrimSpace(item.CDNThumbURL),
+			ThumbMD5:         strings.TrimSpace(item.ThumbFullMD5),
+			MD5:              strings.TrimSpace(firstNonEmpty(item.FullMD5, item.DataID)),
+			Size:             strings.TrimSpace(firstNonEmpty(item.DataSize, item.ThumbSize)),
 			AppName:          strings.TrimSpace(item.AppBrand.SourceDisplayName),
 			AppID:            strings.TrimSpace(item.AppBrand.AppID),
 			AppUsername:      strings.TrimSpace(item.AppBrand.Username),
@@ -700,6 +883,27 @@ func payText(info *wcPayInfo) string {
 		return "[转账]"
 	}
 	return fmt.Sprintf("[转账|%s%s]%s", action, info.FeeDesc, memo)
+}
+
+func mapURL(x string, y string, label string) string {
+	x = strings.TrimSpace(x)
+	y = strings.TrimSpace(y)
+	if x == "" || y == "" {
+		return ""
+	}
+	return fmt.Sprintf("https://maps.google.com/?q=%s,%s", x, y)
+}
+
+func parsePositiveIntString(raw string) int64 {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0
+	}
+	value, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || value <= 0 {
+		return 0
+	}
+	return value
 }
 
 func parsePositiveSeconds(raw string) (int, bool) {
