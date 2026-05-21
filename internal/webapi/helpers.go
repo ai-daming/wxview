@@ -218,6 +218,7 @@ func contactDetailItem(item contacts.Detail) ContactDetailItem {
 		IsOfficial:   item.IsOfficial,
 		AvatarStatus: item.AvatarStatus,
 		AvatarPath:   item.AvatarPath,
+		AvatarURL:    mediaURL(item.AvatarPath),
 		AvatarReason: item.AvatarReason,
 	}
 }

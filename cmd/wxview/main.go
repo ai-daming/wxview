@@ -359,12 +359,14 @@ Notes:
   read-only queries; POST endpoints are local cache/new-messages actions.
   Only loopback addresses such as 127.0.0.1:38765, localhost:38765, or
   [::1]:38765 are accepted.
+  Long local reads are synchronous and use a 30-minute server timeout.
   V1 supports one API instance. Running start or serve while another API
   instance is already running returns an error.
 
 Endpoints:
   GET /health
   GET /v1/me
+  GET /v1/media?path=/absolute/local/media/path
   GET /v1/contacts?kind=chatroom&limit=5
   GET /v1/sessions?limit=5
   GET /v1/messages?username=wxid_xxx&limit=20
@@ -436,11 +438,13 @@ Flags:
 Notes:
   V1 supports one API instance. serve registers itself while running, so start
   or another serve command will return an error until this process exits.
+  Long local reads are synchronous and use a 30-minute server timeout.
 
 Endpoints:
   GET /health
   GET /v1/me
   GET /v1/me?detail=paths
+  GET /v1/media?path=/absolute/local/media/path
   GET /v1/contacts?kind=chatroom&query=AI&limit=5
   GET /v1/contacts/detail?username=wxid_xxx
   GET /v1/members?username=123@chatroom
@@ -471,6 +475,9 @@ Contact query parameters:
 Response notes:
   Business endpoints return JSON and include account/server identity in meta,
   so callers can confirm which local WebAPI endpoint they are reading.
+  Message-like endpoints add content_detail.media_url and thumbnail_url when
+  local media paths are available. /v1/media serves files only from the current
+  account's WeChat data directory or ~/.wxview/cache account directory.
   GET query endpoints ignore undeclared parameters, including refresh=true.
   Refresh is exposed only as POST /v1/cache/refresh with optional scope:
   all, contacts, sessions, messages, favorites, articles, or sns.`)

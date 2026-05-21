@@ -211,10 +211,17 @@ HTTP 接口固定返回 JSON。业务查询返回 `{meta, items}`，`meta` 里�
 声明过的参数，未声明参数会被忽略，包括 `refresh=true`；刷新 cache 使用统一 action
 `POST /v1/cache/refresh`。
 
+消息类接口会在 `content_detail.path` / `thumbnail_path` 存在时追加 `media_url` /
+`thumbnail_url`，可直接通过本机 HTTP 读取媒体文件。媒体接口是内部 loopback 辅助，只服务当前
+账号微信数据目录和 `~/.wxview/cache/<account>` 下的绝对路径。
+
+V1 不做异步 job。宽查询和本地媒体读取仍是同步 HTTP 请求，服务端读写超时设置为 30 分钟。
+
 | 接口 | 参数 |
 | --- | --- |
 | `GET /health` | health、版本、启动时间 |
 | `GET /v1/me` | `detail=paths` 可选 |
+| `GET /v1/media` | `path`，读取当前账号数据目录或 cache 内的媒体文件 |
 | `GET /v1/contacts` | `kind`、`query`、`username`、`limit`、`offset`、`sort` |
 | `GET /v1/contacts/detail` | `username` |
 | `GET /v1/members` | `username` 或 `query` |
@@ -246,6 +253,7 @@ curl http://127.0.0.1:38765/v1/me
 curl 'http://127.0.0.1:38765/v1/contacts?kind=chatroom&limit=5&refresh=true'
 curl 'http://127.0.0.1:38765/v1/sessions?limit=5'
 curl 'http://127.0.0.1:38765/v1/messages?username=wxid_xxx&date=today&limit=20'
+curl 'http://127.0.0.1:38765/v1/media?path=/Users/xxx/.wxview/cache/.../media/abc.jpg'
 curl 'http://127.0.0.1:38765/v1/timeline?kind=chatroom&date=today&limit=20'
 curl 'http://127.0.0.1:38765/v1/search?query=合同&limit=20'
 curl 'http://127.0.0.1:38765/v1/favorites?limit=20'

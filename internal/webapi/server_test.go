@@ -4,12 +4,15 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"wxview/internal/key"
+	"wxview/internal/messages"
 	"wxview/internal/sqlitedb/sqlitetest"
 )
 
@@ -160,6 +163,73 @@ func TestCacheRefreshRejectsInvalidScopeBeforeDiscovery(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestMediaEndpointServesAccountCacheFile(t *testing.T) {
+	dir := t.TempDir()
+	cachePath := filepath.Join(dir, "cache", "wxid_me_suffix", "contact", "contact.db")
+	mediaPath := filepath.Join(dir, "cache", "wxid_me_suffix", "media", "sample.txt")
+	if err := os.MkdirAll(filepath.Dir(cachePath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cachePath, []byte("placeholder"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(mediaPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(mediaPath, []byte("hello media"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	handler := newTestHandler(cachePath, dir)
+	req := httptest.NewRequest(http.MethodGet, "/v1/media?path="+url.QueryEscape(mediaPath), nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if strings.TrimSpace(rec.Body.String()) != "hello media" {
+		t.Fatalf("unexpected media body: %q", rec.Body.String())
+	}
+}
+
+func TestMediaEndpointRejectsOutsidePath(t *testing.T) {
+	dir := t.TempDir()
+	cachePath := filepath.Join(dir, "cache", "wxid_me_suffix", "contact", "contact.db")
+	outsidePath := filepath.Join(dir, "outside.txt")
+	if err := os.MkdirAll(filepath.Dir(cachePath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cachePath, []byte("placeholder"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(outsidePath, []byte("outside"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	handler := newTestHandler(cachePath, dir)
+	req := httptest.NewRequest(http.MethodGet, "/v1/media?path="+url.QueryEscape(outsidePath), nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAttachMediaURLsToMessages(t *testing.T) {
+	handler := NewHandler(Options{InstanceID: "test-server"}).(*handler)
+	list := []messages.Message{{
+		ContentDetail: map[string]string{
+			"path":           "/tmp/image one.jpg",
+			"thumbnail_path": "/tmp/thumb.jpg",
+		},
+	}}
+	handler.attachMediaURLs(list)
+	if list[0].ContentDetail["media_url"] != "/v1/media?path=%2Ftmp%2Fimage+one.jpg" {
+		t.Fatalf("unexpected media_url: %q", list[0].ContentDetail["media_url"])
+	}
+	if list[0].ContentDetail["thumbnail_url"] != "/v1/media?path=%2Ftmp%2Fthumb.jpg" {
+		t.Fatalf("unexpected thumbnail_url: %q", list[0].ContentDetail["thumbnail_url"])
 	}
 }
 

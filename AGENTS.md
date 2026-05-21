@@ -70,6 +70,14 @@ paths automatically when the supporting caches are available.
   optional `scope=all|contacts|sessions|messages|favorites|articles|sns`.
   `POST /v1/new-messages/poll` advances the incremental checkpoint;
   `GET /v1/new-messages` is a read-only preview and must not advance it.
+- WebAPI serves local media via `GET /v1/media?path=...`. It is an internal
+  loopback helper, not a public file server: only absolute paths under the
+  current account's WeChat data directory or `~/.wxview/cache/<account>` should
+  be served. Message-like JSON responses should add `content_detail.media_url`
+  and `content_detail.thumbnail_url` when `path` or `thumbnail_path` are
+  available.
+- WebAPI V1 does not use asynchronous jobs. Long local reads stay synchronous
+  and should rely on the server's 30-minute read/write timeout.
 - WebAPI V1 data endpoints are `/health`, `/v1/me`, `/v1/contacts`,
   `/v1/contacts/detail`, `/v1/members`, `/v1/sessions`, `/v1/unread`,
   `/v1/messages`, `/v1/search`, `/v1/timeline`, `/v1/new-messages`,

@@ -22,6 +22,7 @@ const DefaultAddr = "127.0.0.1:38765"
 
 const contactsDefaultLimit = 50
 const contactsMaxLimit = 500
+const longRequestTimeout = 30 * time.Minute
 
 type Options struct {
 	Addr             string
@@ -118,6 +119,8 @@ func Serve(ctx context.Context, opts Options) error {
 		Addr:              opts.Addr,
 		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       longRequestTimeout,
+		WriteTimeout:      longRequestTimeout,
 	}
 	ln, err := net.Listen("tcp", opts.Addr)
 	if err != nil {
@@ -204,6 +207,8 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleHealth(w, r)
 	case "/v1/me":
 		h.handleMe(w, r)
+	case "/v1/media":
+		h.handleMedia(w, r)
 	case "/v1/contacts":
 		h.handleContacts(w, r)
 	case "/v1/contacts/detail":

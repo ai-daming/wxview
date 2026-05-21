@@ -107,6 +107,7 @@ type ContactDetailItem struct {
 	IsOfficial   bool   `json:"is_official"`
 	AvatarStatus string `json:"avatar_status,omitempty"`
 	AvatarPath   string `json:"avatar_path,omitempty"`
+	AvatarURL    string `json:"avatar_url,omitempty"`
 	AvatarReason string `json:"avatar_reason,omitempty"`
 }
 
@@ -145,9 +146,13 @@ func (h *handler) handleContactDetail(w http.ResponseWriter, r *http.Request) {
 	total := 1
 	meta.Total = &total
 	meta.Returned = 1
+	item := contactDetailItem(result.Item)
+	if item.AvatarPath != "" {
+		item.AvatarURL = mediaURL(item.AvatarPath)
+	}
 	writeJSON(w, http.StatusOK, ItemsResponse[ContactDetailItem]{
 		Meta:  meta,
-		Items: []ContactDetailItem{contactDetailItem(result.Item)},
+		Items: []ContactDetailItem{item},
 	})
 }
 
@@ -315,6 +320,7 @@ func (h *handler) handleMessages(w http.ResponseWriter, r *http.Request) {
 		meta.NextAfterSeq = result.NextAfterSeq
 		meta.NextURL = nextMessagesURL(r, meta.NextAfterSeq, limit)
 	}
+	h.attachMediaURLs(result.Items)
 	writeJSON(w, http.StatusOK, ItemsResponse[messages.Message]{Meta: meta, Items: result.Items})
 }
 
@@ -393,6 +399,7 @@ func (h *handler) handleSearch(w http.ResponseWriter, r *http.Request) {
 	meta.MatchedChats = result.MatchedChats
 	meta.HasMore = &result.HasMore
 	meta.NextURL = nextOffsetURL(r, limit, offset, result.HasMore)
+	h.attachMediaURLs(result.Items)
 	writeJSON(w, http.StatusOK, ItemsResponse[messages.Message]{Meta: meta, Items: result.Items})
 }
 
@@ -476,6 +483,7 @@ func (h *handler) handleTimeline(w http.ResponseWriter, r *http.Request) {
 		meta.NextCursor = result.NextCursor
 		meta.NextURL = nextCursorURL(r, result.NextCursor)
 	}
+	h.attachMediaURLs(result.Items)
 	writeJSON(w, http.StatusOK, ItemsResponse[messages.Message]{Meta: meta, Items: result.Items})
 }
 
@@ -566,6 +574,7 @@ func (h *handler) writeNewMessages(w http.ResponseWriter, r *http.Request, limit
 	meta.Reset = boolPtr(reset)
 	meta.ChangedChats = result.ChangedChats
 	meta.StatePath = result.StatePath
+	h.attachMediaURLs(result.Items)
 	writeJSON(w, http.StatusOK, ItemsResponse[messages.Message]{Meta: meta, Items: result.Items})
 }
 
