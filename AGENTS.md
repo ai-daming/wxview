@@ -54,13 +54,15 @@ paths automatically when the supporting caches are available.
   `jsonl`, or `csv` plus an explicit `--limit` for automated reads.
 - `--count` reports the filtered total before pagination; `--limit` and
   `--offset` do not affect the count.
-- `wxview api start` is the normal loopback-only local WebAPI entrypoint. It
-  defaults to `--addr 127.0.0.1:38765`, runs in the background, and must return
-  an error if a managed API instance is already running. V1 manages only one
-  API instance: `wxview api status` and `wxview api stop` take no `--addr`.
-  `wxview api serve` is retained as the foreground/debug form. Both forms must
-  only allow loopback listen addresses. This is not a remote/authenticated API
-  in V1.
+- `wxview api start` is the normal local WebAPI entrypoint. It defaults to
+  `--addr 127.0.0.1:38765`, runs in the background, and must return an error if
+  a managed API instance is already running. Passing `--addr` explicitly
+  controls the listen address; non-loopback addresses such as
+  `0.0.0.0:38765` or a LAN IP are allowed and expose the unauthenticated local
+  WebAPI to reachable network clients. V1 manages only one API instance:
+  `wxview api status` and `wxview api stop` take no `--addr`. `wxview api serve`
+  is retained as the foreground/debug form. This is not an authenticated API in
+  V1.
 - WebAPI business responses should include lightweight account/server identity
   metadata so callers can distinguish multiple local instances. Business query
   endpoints return a `{meta, items}` envelope; message-like endpoints reuse the
@@ -73,7 +75,7 @@ paths automatically when the supporting caches are available.
   `POST /v1/new-messages/poll` advances the incremental checkpoint;
   `GET /v1/new-messages` is a read-only preview and must not advance it.
 - WebAPI serves local media via `GET /v1/media?path=...`. It is an internal
-  loopback helper, not a public file server: only absolute paths under the
+  helper, not a public file server: only absolute paths under the
   current account's WeChat data directory or `~/.wxview/cache/<account>` should
   be served. Message-like JSON responses should add `content_detail.media_url`
   and `content_detail.thumbnail_url` when `path` or `thumbnail_path` are

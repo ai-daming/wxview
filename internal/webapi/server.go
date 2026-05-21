@@ -20,6 +20,11 @@ import (
 
 const DefaultAddr = "127.0.0.1:38765"
 
+const (
+	ExposureLoopback = "loopback"
+	ExposureNetwork  = "network"
+)
+
 const contactsDefaultLimit = 50
 const contactsMaxLimit = 500
 const longRequestTimeout = 30 * time.Minute
@@ -37,6 +42,7 @@ type ServerInfo struct {
 	ID        string `json:"id"`
 	Version   string `json:"version"`
 	Addr      string `json:"addr"`
+	Exposure  string `json:"exposure"`
 	StartedAt string `json:"started_at"`
 }
 
@@ -87,6 +93,7 @@ type HealthResponse struct {
 	Version   string `json:"version"`
 	StartedAt string `json:"started_at"`
 	ServerID  string `json:"server_id"`
+	Exposure  string `json:"exposure"`
 }
 
 type ErrorResponse struct {
@@ -111,7 +118,7 @@ func Serve(ctx context.Context, opts Options) error {
 	if opts.Addr == "" {
 		opts.Addr = DefaultAddr
 	}
-	if err := ValidateLoopbackAddr(opts.Addr); err != nil {
+	if err := ValidateAddr(opts.Addr); err != nil {
 		return err
 	}
 	handler := NewHandler(opts)
@@ -179,26 +186,54 @@ func NewHandler(opts Options) http.Handler {
 	}
 }
 
-func ValidateLoopbackAddr(addr string) error {
+func ValidateAddr(addr string) error {
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
-		return fmt.Errorf("invalid api addr %q: use loopback host:port, for example %s", addr, DefaultAddr)
+		return fmt.Errorf("invalid api addr %q: use host:port, for example %s", addr, DefaultAddr)
 	}
-	if strings.TrimSpace(host) == "" {
-		return fmt.Errorf("invalid api addr %q: host must be an explicit loopback address", addr)
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return fmt.Errorf("invalid api addr %q: host must be explicit; use 0.0.0.0 to listen on all IPv4 interfaces", addr)
+	}
+	if strings.ContainsAny(host, " \t\r\n") {
+		return fmt.Errorf("invalid api addr %q: host must not contain whitespace", addr)
 	}
 	portNum, err := strconv.Atoi(port)
 	if err != nil || portNum <= 0 || portNum > 65535 {
 		return fmt.Errorf("invalid api addr %q: port must be 1-65535", addr)
 	}
+	return nil
+}
+
+func AddrExposure(addr string) string {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return ExposureNetwork
+	}
+	host = strings.TrimSpace(host)
 	if strings.EqualFold(host, "localhost") {
-		return nil
+		return ExposureLoopback
 	}
 	ip := net.ParseIP(host)
-	if ip == nil || !ip.IsLoopback() {
-		return fmt.Errorf("invalid api addr %q: only loopback addresses are allowed", addr)
+	if ip != nil && ip.IsLoopback() {
+		return ExposureLoopback
 	}
-	return nil
+	return ExposureNetwork
+}
+
+func LocalClientAddr(addr string) string {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr
+	}
+	ip := net.ParseIP(strings.TrimSpace(host))
+	if ip == nil || !ip.IsUnspecified() {
+		return addr
+	}
+	if ip.To4() != nil {
+		return net.JoinHostPort("127.0.0.1", port)
+	}
+	return net.JoinHostPort("::1", port)
 }
 
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -260,6 +295,7 @@ func (h *handler) handleHealth(w http.ResponseWriter, r *http.Request) {
 		Version:   h.version,
 		StartedAt: h.startedAt.Format(time.RFC3339),
 		ServerID:  h.serverID,
+		Exposure:  AddrExposure(h.addr),
 	})
 }
 
@@ -375,6 +411,7 @@ func (h *handler) serverInfo() ServerInfo {
 		ID:        h.serverID,
 		Version:   h.version,
 		Addr:      h.addr,
+		Exposure:  AddrExposure(h.addr),
 		StartedAt: h.startedAt.Format(time.RFC3339),
 	}
 }

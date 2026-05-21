@@ -16,24 +16,50 @@ import (
 	"wxview/internal/sqlitedb/sqlitetest"
 )
 
-func TestValidateLoopbackAddr(t *testing.T) {
+func TestValidateAddr(t *testing.T) {
 	for _, addr := range []string{
 		"127.0.0.1:38765",
 		"localhost:38765",
 		"[::1]:38765",
+		"0.0.0.0:38765",
+		"192.168.1.2:38765",
+		"[::]:38765",
 	} {
-		if err := ValidateLoopbackAddr(addr); err != nil {
-			t.Fatalf("ValidateLoopbackAddr(%q) returned error: %v", addr, err)
+		if err := ValidateAddr(addr); err != nil {
+			t.Fatalf("ValidateAddr(%q) returned error: %v", addr, err)
 		}
 	}
 	for _, addr := range []string{
 		":38765",
-		"0.0.0.0:38765",
-		"192.168.1.2:38765",
 		"127.0.0.1:notaport",
+		"127.0.0.1:0",
+		"127.0.0.1:65536",
 	} {
-		if err := ValidateLoopbackAddr(addr); err == nil {
-			t.Fatalf("ValidateLoopbackAddr(%q) should reject non-loopback addr", addr)
+		if err := ValidateAddr(addr); err == nil {
+			t.Fatalf("ValidateAddr(%q) should reject invalid addr", addr)
+		}
+	}
+}
+
+func TestAddrExposureAndLocalClientAddr(t *testing.T) {
+	for addr, want := range map[string]string{
+		"127.0.0.1:38765":   ExposureLoopback,
+		"localhost:38765":   ExposureLoopback,
+		"[::1]:38765":       ExposureLoopback,
+		"0.0.0.0:38765":     ExposureNetwork,
+		"192.168.1.2:38765": ExposureNetwork,
+		"[::]:38765":        ExposureNetwork,
+	} {
+		if got := AddrExposure(addr); got != want {
+			t.Fatalf("AddrExposure(%q) = %q, want %q", addr, got, want)
+		}
+	}
+	for addr, want := range map[string]string{
+		"0.0.0.0:38765": "127.0.0.1:38765",
+		"[::]:38765":    "[::1]:38765",
+	} {
+		if got := LocalClientAddr(addr); got != want {
+			t.Fatalf("LocalClientAddr(%q) = %q, want %q", addr, got, want)
 		}
 	}
 }

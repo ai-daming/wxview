@@ -121,7 +121,7 @@ Commands:
                     and save them locally. Usually run once at the beginning.
   wxview me         Show the current WeChat account identity Wxview will read.
   wxview daemon     Show daemon help.
-  wxview api        Run the loopback-only local WebAPI.
+  wxview api        Run the local WebAPI.
   wxview cache      Inspect local decrypted cache freshness and key coverage.
   wxview index      Inspect and maintain the derived message index.
   wxview contacts   List contacts from the decrypted contact cache.
@@ -184,7 +184,7 @@ Current scope:
              sns/sns.db, and message/biz_message_*.db when keys are available.
              Message history reads by explicit username include local image/video
              path resolution when media files are available.
-  Not included yet: WAL patching, remote Web API access, authenticated write APIs.
+  Not included yet: WAL patching, hosted/public WebAPI deployment, authenticated write APIs.
 
   Run:
   wxview init --help
@@ -264,7 +264,7 @@ Usage:
   wxview --version
 
 Output:
-  Prints the build version, for example: 0.3.0`)
+  Prints the build version, for example: 0.3.1`)
 }
 
 func initUsage(w io.Writer) {
@@ -356,7 +356,7 @@ Examples:
 }
 
 func apiUsage(w io.Writer) {
-	fmt.Fprintln(w, `wxview api - Run the loopback-only local WebAPI
+	fmt.Fprintln(w, `wxview api - Run the local WebAPI
 
 Usage:
   wxview api
@@ -366,7 +366,7 @@ Usage:
   wxview api serve [--addr 127.0.0.1:38765]
 
 Subcommands:
-  start    Start the loopback-only HTTP server in the background.
+  start    Start the HTTP server in the background.
   status   Show the single managed API instance status.
   stop     Stop the single managed API instance.
   serve    Run the HTTP server in the foreground for debugging.
@@ -375,8 +375,10 @@ Notes:
   The WebAPI is a separate local data entrypoint. It does not reuse the daemon
   socket and does not make the daemon a query service. GET endpoints are
   read-only queries; POST endpoints are local cache/new-messages actions.
-  Only loopback addresses such as 127.0.0.1:38765, localhost:38765, or
-  [::1]:38765 are accepted.
+  The default address is loopback-only. Passing --addr explicitly controls the
+  listen address; for example 0.0.0.0:38765 listens on all IPv4 interfaces.
+  Non-loopback addresses expose the unauthenticated local WebAPI to reachable
+  network clients.
   Long local reads are synchronous and use a 30-minute server timeout.
   V1 supports one API instance. Running start or serve while another API
   instance is already running returns an error.
@@ -405,15 +407,19 @@ Run:
 }
 
 func apiStartUsage(w io.Writer) {
-	fmt.Fprintln(w, `wxview api start - Start the loopback-only local WebAPI in the background
+	fmt.Fprintln(w, `wxview api start - Start the local WebAPI in the background
 
 Usage:
   wxview api start [--addr 127.0.0.1:38765]
 
 Flags:
-  --addr HOST:PORT   loopback-only listen address. Default: 127.0.0.1:38765.
+  --addr HOST:PORT   Listen address. Default: 127.0.0.1:38765.
 
 Notes:
+  The default address is only reachable from this machine. Use an explicit
+  address such as 0.0.0.0:38765 or 192.168.1.10:38765 to listen on a network
+  interface. Non-loopback addresses expose the unauthenticated local WebAPI to
+  reachable network clients.
   V1 supports one API instance. If an API instance started by start or serve is
   already running, start returns an error instead of starting a second process.
   Runtime files are:
@@ -445,15 +451,19 @@ Notes:
 }
 
 func apiServeUsage(w io.Writer) {
-	fmt.Fprintln(w, `wxview api serve - Run the loopback-only local WebAPI in the foreground
+	fmt.Fprintln(w, `wxview api serve - Run the local WebAPI in the foreground
 
 Usage:
   wxview api serve [--addr 127.0.0.1:38765]
 
 Flags:
-  --addr HOST:PORT   loopback-only listen address. Default: 127.0.0.1:38765.
+  --addr HOST:PORT   Listen address. Default: 127.0.0.1:38765.
 
 Notes:
+  The default address is only reachable from this machine. Use an explicit
+  address such as 0.0.0.0:38765 or 192.168.1.10:38765 to listen on a network
+  interface. Non-loopback addresses expose the unauthenticated local WebAPI to
+  reachable network clients.
   V1 supports one API instance. serve registers itself while running, so start
   or another serve command will return an error until this process exits.
   Long local reads are synchronous and use a 30-minute server timeout.
@@ -1242,14 +1252,14 @@ func runAPIStart(ctx context.Context, args []string, stdout io.Writer) error {
 	}
 	fs := flag.NewFlagSet("api start", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	addr := fs.String("addr", webapi.DefaultAddr, "loopback listen address")
+	addr := fs.String("addr", webapi.DefaultAddr, "listen address")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() > 0 {
 		return fmt.Errorf("unexpected api start argument: %s", fs.Arg(0))
 	}
-	if err := webapi.ValidateLoopbackAddr(*addr); err != nil {
+	if err := webapi.ValidateAddr(*addr); err != nil {
 		return err
 	}
 	if err := ensureNoAPIAlreadyRunning(ctx, *addr); err != nil {
@@ -1294,6 +1304,7 @@ func runAPIStart(ctx context.Context, args []string, stdout io.Writer) error {
 		return err
 	}
 	fmt.Fprintf(stdout, "api addr: http://%s\n", *addr)
+	writeAPIExposure(stdout, *addr)
 	fmt.Fprintf(stdout, "log: %s\n", logPath)
 	fmt.Fprintf(stdout, "pid: %d\n", cmd.Process.Pid)
 
@@ -1334,6 +1345,11 @@ func runAPIStatus(ctx context.Context, args []string, stdout io.Writer) error {
 	if !ok {
 		if health, healthy := apiHealth(ctx, webapi.DefaultAddr); healthy {
 			fmt.Fprintf(stdout, "api addr: http://%s\n", webapi.DefaultAddr)
+			exposure := health.Exposure
+			if exposure == "" {
+				exposure = webapi.AddrExposure(webapi.DefaultAddr)
+			}
+			fmt.Fprintf(stdout, "exposure: %s\n", exposure)
 			fmt.Fprintf(stdout, "server_id: %s\n", health.ServerID)
 			if me, ok := apiMe(ctx, webapi.DefaultAddr); ok {
 				fmt.Fprintf(stdout, "account: %s\n", me.Account.Username)
@@ -1351,6 +1367,7 @@ func runAPIStatus(ctx context.Context, args []string, stdout io.Writer) error {
 		state.Addr = webapi.DefaultAddr
 	}
 	fmt.Fprintf(stdout, "api addr: http://%s\n", state.Addr)
+	fmt.Fprintf(stdout, "exposure: %s\n", webapi.AddrExposure(state.Addr))
 	fmt.Fprintf(stdout, "pid: %d\n", state.PID)
 	if state.LogPath != "" {
 		fmt.Fprintf(stdout, "log: %s\n", state.LogPath)
@@ -1431,6 +1448,14 @@ func runAPIStop(ctx context.Context, args []string, stdout io.Writer) error {
 	return nil
 }
 
+func writeAPIExposure(w io.Writer, addr string) {
+	exposure := webapi.AddrExposure(addr)
+	fmt.Fprintf(w, "api exposure: %s\n", exposure)
+	if exposure == webapi.ExposureNetwork {
+		fmt.Fprintln(w, "warning: no authentication is enabled; reachable clients can read local WeChat data from this API.")
+	}
+}
+
 func runAPIServe(ctx context.Context, args []string, stdout io.Writer) error {
 	if hasHelp(args) {
 		apiServeUsage(stdout)
@@ -1438,14 +1463,14 @@ func runAPIServe(ctx context.Context, args []string, stdout io.Writer) error {
 	}
 	fs := flag.NewFlagSet("api serve", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	addr := fs.String("addr", webapi.DefaultAddr, "loopback listen address")
+	addr := fs.String("addr", webapi.DefaultAddr, "listen address")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() > 0 {
 		return fmt.Errorf("unexpected api serve argument: %s", fs.Arg(0))
 	}
-	if err := webapi.ValidateLoopbackAddr(*addr); err != nil {
+	if err := webapi.ValidateAddr(*addr); err != nil {
 		return err
 	}
 	managedChild := os.Getenv(apiManagedChildEnv) == "1"
@@ -1467,6 +1492,7 @@ func runAPIServe(ctx context.Context, args []string, stdout io.Writer) error {
 	ctx, stop := signal.NotifyContext(ctx, daemonSignals()...)
 	defer stop()
 	fmt.Fprintf(stdout, "api addr: http://%s\n", *addr)
+	writeAPIExposure(stdout, *addr)
 	fmt.Fprintln(stdout, "api mode: local")
 	return webapi.Serve(ctx, webapi.Options{
 		Addr:    *addr,
@@ -1573,7 +1599,7 @@ func removeAPIStateForPID(pid int) {
 }
 
 func apiHealth(ctx context.Context, addr string) (webapi.HealthResponse, bool) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+"/health", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+webapi.LocalClientAddr(addr)+"/health", nil)
 	if err != nil {
 		return webapi.HealthResponse{}, false
 	}
@@ -1594,7 +1620,7 @@ func apiHealth(ctx context.Context, addr string) (webapi.HealthResponse, bool) {
 }
 
 func apiMe(ctx context.Context, addr string) (webapi.MeResponse, bool) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+"/v1/me", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+webapi.LocalClientAddr(addr)+"/v1/me", nil)
 	if err != nil {
 		return webapi.MeResponse{}, false
 	}

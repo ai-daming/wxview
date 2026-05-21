@@ -94,17 +94,19 @@ func TestAPIHelpIsActionable(t *testing.T) {
 	}
 	text := out.String()
 	for _, want := range []string{
-		"wxview api - Run the loopback-only local WebAPI",
+		"wxview api - Run the local WebAPI",
 		"wxview api start",
 		"wxview api status",
 		"wxview api stop",
 		"wxview api serve",
 		"127.0.0.1:38765",
+		"0.0.0.0:38765",
 		"GET /v1/me",
 		"GET /v1/contacts",
 		"POST /v1/cache/refresh",
 		"GET endpoints are",
 		"does not reuse the daemon",
+		"unauthenticated",
 		"one API instance",
 		"start or serve",
 	} {
@@ -121,8 +123,10 @@ func TestAPIStartHelpIsActionable(t *testing.T) {
 	}
 	text := out.String()
 	for _, want := range []string{
-		"wxview api start - Start the loopback-only local WebAPI in the background",
+		"wxview api start - Start the local WebAPI in the background",
 		"--addr HOST:PORT",
+		"0.0.0.0:38765",
+		"unauthenticated",
 		"one API instance",
 		"start or serve",
 		"~/.wxview/api.json",
@@ -176,9 +180,10 @@ func TestAPIServeHelpIsActionable(t *testing.T) {
 	}
 	text := out.String()
 	for _, want := range []string{
-		"wxview api serve - Run the loopback-only local WebAPI in the foreground",
+		"wxview api serve - Run the local WebAPI in the foreground",
 		"--addr HOST:PORT",
-		"loopback",
+		"listen on a network",
+		"unauthenticated",
 		"serve registers itself",
 		"GET /health",
 		"GET /v1/messages",

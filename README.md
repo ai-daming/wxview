@@ -19,7 +19,7 @@ Wxview 的重点是清楚的本地缓存边界和稳定的机器输出：`init` 
 - **AI 友好**：支持 `json`、`jsonl`、`csv` 和 `table` 输出；`messages` / `timeline` 的 JSON 输出带 `meta.next_args`，方便可靠分页。
 - **身份清楚**：`wxview me` 和 WebAPI `GET /v1/me` 会返回当前账号身份，方便区分多个本地实例。
 - **跨会话读取**：既能按明确 `username` 查询单个聊天，也能按联系人筛选条件合并成全局时间线。
-- **本地 WebAPI**：`wxview api start` 提供 loopback-only HTTP 数据接口，GET 查询只读，POST 用于本地 cache/new-messages action；`api serve` 用于前台调试。
+- **本地 WebAPI**：`wxview api start` 提供 HTTP 数据接口，默认只监听本机；显式 `--addr` 可监听局域网地址。GET 查询只读，POST 用于本地 cache/new-messages action；`api serve` 用于前台调试。
 - **媒体可用**：图片、视频、文件和语音在支持缓存可用时会自动解析成本地可打开路径；语音会内置解码为 WAV，不要求系统安装 ffmpeg。
 - **可删除索引**：消息索引是派生加速层，可以删除重建，不改变源微信库和解密缓存。
 
@@ -190,7 +190,7 @@ sudo ./bin/wxview init
 | 常驻维护 | `wxview daemon start` | 持续解密缓存，维护 message index |
 | 状态检查 | `daemon status` / `cache status` / `index status` | 看 daemon、cache、index 是否健康 |
 | 查询 | `sessions` / `contacts` / `messages` / `timeline` / `search` | 直接读取本地 cache / index |
-| WebAPI | `wxview api start` | loopback-only HTTP 数据接口 |
+| WebAPI | `wxview api start` | HTTP 数据接口，默认只监听本机 |
 
 不要把 `init` 当成常驻服务。`init` 是一次性准备动作；`daemon start` 才是让 Wxview
 在日常使用中持续接近实时的入口。
@@ -205,7 +205,10 @@ timeline、search、favorites、articles、sns、new-messages 和 cache refresh 
 envelope 和错误响应。
 
 WebAPI 也不复用 daemon socket。`wxview api start` 是独立 HTTP 后台入口，默认只监听
-`127.0.0.1:38765`，业务接口会返回账号和 server 标识，方便确认当前实例读取的是哪个账号。
+`127.0.0.1:38765`。如果需要给局域网内其他设备访问，可以显式传入监听地址，例如
+`wxview api start --addr 0.0.0.0:38765` 或 `wxview api start --addr 192.168.1.10:38765`。
+非本机监听没有内置认证，能访问该端口的客户端就能读取本地 WebAPI 数据。业务接口会返回
+账号和 server 标识，方便确认当前实例读取的是哪个账号。
 V1 只支持一个 WebAPI 实例；无论已有实例是 `api start` 还是 `api serve` 启动的，再执行
 `wxview api start` 或 `wxview api serve --addr 其他端口` 都会报错。`wxview api serve`
 保留为前台调试模式，运行时也会登记为单实例，退出时清理状态。
@@ -219,8 +222,8 @@ HTTP 接口固定返回 JSON。业务查询返回 `{meta, items}`，`meta` 里�
 
 消息类接口会在 `content_detail.path` / `thumbnail_path` 存在时追加 `media_url` /
 `thumbnail_url`，也会处理引用消息的 `refer_path` / `refer_thumbnail_path`、合并聊天记录
-`record_items_json` 内 item 的媒体路径，以及名片头像 `avatar_path`。媒体接口是内部 loopback
-辅助，只服务当前账号微信数据目录和 `~/.wxview/cache/<account>` 下的绝对路径。
+`record_items_json` 内 item 的媒体路径，以及名片头像 `avatar_path`。媒体接口是内部辅助
+接口，只服务当前账号微信数据目录和 `~/.wxview/cache/<account>` 下的绝对路径。
 
 消息 `content_detail` 会尽量结构化常见类型：图片、视频、文件、语音、表情、小程序、链接/文章、
 视频号/直播、引用、合并聊天记录、名片、位置、系统事件、转账和红包。图片/视频/文件/语音/封面/
@@ -320,7 +323,7 @@ curl -X POST http://127.0.0.1:38765/v1/cache/refresh
 | `wxview me` | 查看当前 Wxview 会读取的微信账号身份 |
 | `wxview daemon start` | 启动后台缓存刷新和索引维护 |
 | `wxview daemon status` | 检查 daemon 是否响应 health |
-| `wxview api start` | 后台启动 loopback-only WebAPI |
+| `wxview api start` | 后台启动 WebAPI，默认只监听本机 |
 | `wxview api status` | 查看单个托管 WebAPI 实例状态 |
 | `wxview api stop` | 停止单个托管 WebAPI 实例 |
 | `wxview cache status` | 查看解密缓存 freshness 和 key 覆盖 |
@@ -411,7 +414,8 @@ daemon 是内部缓存维护服务，不是 WebAPI。WebAPI 由 `wxview api star
 - 支持的 CLI 形式只有 `wxview daemon`、`wxview daemon start`、`wxview daemon stop`、`wxview daemon status`。
 - `wxview daemon` 和 `wxview daemon --help` 一样，只显示帮助，不启动服务。
 - socket `~/.wxview/wxview.sock` 是内部控制通道，不是 WebAPI。
-- `wxview api start --addr 127.0.0.1:38765` 后台启动独立 HTTP 数据入口，默认只允许 loopback 地址。
+- `wxview api start --addr 127.0.0.1:38765` 后台启动独立 HTTP 数据入口，默认只监听本机。
+- `wxview api start --addr 0.0.0.0:38765` 或绑定具体局域网 IP 可以让其他设备访问；当前没有内置认证，不要暴露到不可信网络。
 - `wxview api status` 和 `wxview api stop` 不接收 `--addr`；V1 只管理一个 API 实例。
 - `wxview api serve --addr 127.0.0.1:38765` 以前台方式运行同一个 HTTP 服务，适合调试；它也参与单实例保护。
 - 已有 WebAPI 实例运行时，再执行 `wxview api start` 或 `wxview api serve --addr 其他端口` 会报错。
