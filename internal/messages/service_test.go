@@ -510,6 +510,58 @@ func TestListNormalizesQuoteReferMessageDetail(t *testing.T) {
 	}
 }
 
+func TestListNormalizesChatRecordDetail(t *testing.T) {
+	dir := t.TempDir()
+	db := filepath.Join(dir, "message_31.db")
+	table := TableName("amy76868")
+	recordItem := `<recordinfo><fromscene>0</fromscene><favcreatetime>1779338631</favcreatetime><title>本伟的聊天记录</title><desc>本伟: [小程序] Peet's Cafe皮爷咖啡·轻餐(凤凰汇店)
+本伟: 明天4点这里
+本伟: 地铁到三元桥出来，直接可以走到凤凰汇地下，再上来一层就好</desc><datalist count="3"><dataitem datatype="19" dataid="mini1"><sourcename>本伟</sourcename><sourcetime>2026-05-21 12:40</sourcetime><datatitle>Peet's Cafe皮爷咖啡·轻餐(凤凰汇店)</datatitle><cdnthumbkey>thumb-secret</cdnthumbkey><dataitemsource><hashusername>hash-secret</hashusername></dataitemsource><appbranditem><username>gh_bc5b635c05c4@app</username><appid>wx734c1ad7b3562129</appid><sourcedisplayname>大众点评美食电影运动旅游门票</sourcedisplayname></appbranditem></dataitem><dataitem datatype="1" dataid="text1"><sourcename>本伟</sourcename><sourcetime>2026-05-21 12:40</sourcetime><datadesc>明天4点这里</datadesc></dataitem><dataitem datatype="1" dataid="text2"><sourcename>本伟</sourcename><sourcetime>2026-05-21 12:41</sourcetime><datadesc>地铁到三元桥出来，直接可以走到凤凰汇地下，再上来一层就好</datadesc></dataitem></datalist></recordinfo>`
+	content := fmt.Sprintf(`<?xml version="1.0"?>
+<msg>
+  <appmsg>
+    <title>本伟的聊天记录</title>
+    <des>本伟: [小程序] Peet's Cafe皮爷咖啡·轻餐(凤凰汇店)
+本伟: 明天4点这里
+本伟: 地铁到三元桥出来，直接可以走到凤凰汇地下，再上来一层就好</des>
+    <type>19</type>
+    <recorditem><![CDATA[%s]]></recorditem>
+  </appmsg>
+</msg>`, recordItem)
+	createMessageDB(t, db, table, []messageRow{{
+		LocalID:    394,
+		SortSeq:    1779338631000,
+		CreateTime: 1779338631,
+		LocalType:  (int64(messageSubTypeChatRecord) << 32) | int64(messageTypeShare),
+		Status:     4,
+		Content:    content,
+	}})
+
+	got, err := NewService([]string{db}).List(context.Background(), QueryOptions{Username: "amy76868"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d messages, want 1", len(got))
+	}
+	detail := got[0].ContentDetail
+	if detail["type"] != "chat_record" || detail["app_type"] != "19" || detail["record_count"] != "3" {
+		t.Fatalf("unexpected chat record identity: %+v", detail)
+	}
+	wantText := "[聊天记录|本伟的聊天记录]\n本伟: [小程序|Peet's Cafe皮爷咖啡·轻餐(凤凰汇店)]\n本伟: 明天4点这里\n本伟: 地铁到三元桥出来，直接可以走到凤凰汇地下，再上来一层就好"
+	if detail["text"] != wantText || detail["record_text"] != strings.TrimPrefix(wantText, "[聊天记录|本伟的聊天记录]\n") {
+		t.Fatalf("unexpected chat record text: %+v", detail)
+	}
+	if !strings.Contains(detail["record_items_json"], `"type":"mini_program"`) || !strings.Contains(detail["record_items_json"], `"app_name":"大众点评美食电影运动旅游门票"`) {
+		t.Fatalf("missing parsed record item details: %+v", detail)
+	}
+	for key, value := range detail {
+		if strings.Contains(value, "thumb-secret") || strings.Contains(value, "hash-secret") || strings.Contains(strings.ToLower(key), "cdnthumbkey") {
+			t.Fatalf("internal record metadata leaked into detail %s=%q: %+v", key, value, detail)
+		}
+	}
+}
+
 func TestListIncludesSourceWhenRequested(t *testing.T) {
 	dir := t.TempDir()
 	db := filepath.Join(dir, "message_31.db")

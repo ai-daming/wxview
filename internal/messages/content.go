@@ -1,6 +1,7 @@
 package messages
 
 import (
+	"encoding/json"
 	"encoding/xml"
 	"fmt"
 	"regexp"
@@ -25,6 +26,7 @@ const (
 	messageSubTypeLink2            = 5
 	messageSubTypeFile             = 6
 	messageSubTypeGIF              = 8
+	messageSubTypeChatRecord       = 19
 	messageSubTypeMiniProgram      = 33
 	messageSubTypeMiniProgram2     = 36
 	messageSubTypeChannel          = 51
@@ -81,6 +83,7 @@ type appMsg struct {
 	SourceDisplayName string      `xml:"sourcedisplayname"`
 	AppAttach         *appAttach  `xml:"appattach"`
 	Refer             *referMsg   `xml:"refermsg"`
+	RecordItem        string      `xml:"recorditem"`
 	FinderFeed        *finderFeed `xml:"finderFeed"`
 	FinderLive        *finderLive `xml:"finderLive"`
 	WCPayInfo         *wcPayInfo  `xml:"wcpayinfo"`
@@ -99,6 +102,49 @@ type referMsg struct {
 type appAttach struct {
 	FileExt  string `xml:"fileext"`
 	TotalLen string `xml:"totallen"`
+}
+
+type recordInfo struct {
+	Title    string         `xml:"title"`
+	Desc     string         `xml:"desc"`
+	DataList recordDataList `xml:"datalist"`
+}
+
+type recordDataList struct {
+	Count string           `xml:"count,attr"`
+	Items []recordDataItem `xml:"dataitem"`
+}
+
+type recordDataItem struct {
+	DataType         string             `xml:"datatype,attr"`
+	SourceName       string             `xml:"sourcename"`
+	SourceTime       string             `xml:"sourcetime"`
+	DataTitle        string             `xml:"datatitle"`
+	DataDesc         string             `xml:"datadesc"`
+	SrcMsgLocalID    string             `xml:"srcMsgLocalid"`
+	SrcMsgCreateTime string             `xml:"srcMsgCreateTime"`
+	AppBrand         recordAppBrandItem `xml:"appbranditem"`
+}
+
+type recordAppBrandItem struct {
+	Username          string `xml:"username"`
+	AppID             string `xml:"appid"`
+	SourceDisplayName string `xml:"sourcedisplayname"`
+	Type              string `xml:"type"`
+}
+
+type recordItemDetail struct {
+	Type             string `json:"type,omitempty"`
+	DataType         string `json:"data_type,omitempty"`
+	SourceName       string `json:"source_name,omitempty"`
+	SourceTime       string `json:"source_time,omitempty"`
+	Title            string `json:"title,omitempty"`
+	Desc             string `json:"desc,omitempty"`
+	AppName          string `json:"app_name,omitempty"`
+	AppID            string `json:"app_id,omitempty"`
+	AppUsername      string `json:"app_username,omitempty"`
+	SrcMsgLocalID    string `json:"src_msg_local_id,omitempty"`
+	SrcMsgCreateTime string `json:"src_msg_create_time,omitempty"`
 }
 
 type imageMsg struct {
@@ -342,6 +388,8 @@ func normalizeShare(subType int64, raw string) normalizedContent {
 			putIfNotEmpty(details, "url", msg.Emoji.CdnURL)
 		}
 		return normalizedContent{Type: "gif", Text: "[GIF表情]", Details: detailsOrNil(details)}
+	case messageSubTypeChatRecord:
+		return normalizeChatRecord(app, details)
 	case messageSubTypeMiniProgram, messageSubTypeMiniProgram2:
 		title := firstNonEmpty(app.SourceDisplayName, app.Title)
 		return normalizedContent{Type: "mini_program", Text: linkLikeText("小程序", title, app.URL), Details: detailsOrNil(details)}
@@ -382,6 +430,29 @@ func normalizeShare(subType int64, raw string) normalizedContent {
 	}
 }
 
+func normalizeChatRecord(app appMsg, details map[string]string) normalizedContent {
+	info, ok := parseRecordInfo(app.RecordItem)
+	title := firstNonEmpty(app.Title, info.Title)
+	recordText := strings.TrimSpace(app.Des)
+	if ok {
+		putIfNotEmpty(details, "record_title", info.Title)
+		putIfNotEmpty(details, "record_desc", info.Desc)
+		putIfNotEmpty(details, "record_count", recordCountText(info))
+		lines := recordItemLines(info.DataList.Items)
+		if len(lines) > 0 {
+			recordText = strings.Join(lines, "\n")
+			putIfNotEmpty(details, "record_text", recordText)
+		}
+		if itemsJSON := recordItemsJSON(info.DataList.Items); itemsJSON != "" {
+			details["record_items_json"] = itemsJSON
+		}
+	}
+	if details["record_count"] == "" && strings.TrimSpace(app.Des) != "" {
+		putIfNotEmpty(details, "record_text", strings.TrimSpace(app.Des))
+	}
+	return normalizedContent{Type: "chat_record", Text: chatRecordText(title, recordText), Details: detailsOrNil(details)}
+}
+
 func addQuoteReferDetails(details map[string]string, ref *referMsg) {
 	if ref == nil {
 		return
@@ -418,6 +489,119 @@ func normalizeReferContent(rawType string, rawContent string) (normalizedContent
 		return normalizedContent{Type: "unknown", Text: rawContent}, true
 	}
 	return normalizeContent(msgType, 0, rawContent), true
+}
+
+func parseRecordInfo(raw string) (recordInfo, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return recordInfo{}, false
+	}
+	var info recordInfo
+	if err := xml.Unmarshal([]byte(raw), &info); err != nil {
+		return recordInfo{}, false
+	}
+	if strings.TrimSpace(info.Title) == "" && strings.TrimSpace(info.Desc) == "" && len(info.DataList.Items) == 0 {
+		return recordInfo{}, false
+	}
+	return info, true
+}
+
+func recordCountText(info recordInfo) string {
+	count := strings.TrimSpace(info.DataList.Count)
+	if count != "" {
+		return count
+	}
+	if len(info.DataList.Items) == 0 {
+		return ""
+	}
+	return strconv.Itoa(len(info.DataList.Items))
+}
+
+func recordItemLines(items []recordDataItem) []string {
+	lines := make([]string, 0, len(items))
+	for _, item := range items {
+		body := recordItemText(item)
+		if body == "" {
+			continue
+		}
+		name := strings.TrimSpace(item.SourceName)
+		if name != "" {
+			lines = append(lines, name+": "+body)
+			continue
+		}
+		lines = append(lines, body)
+	}
+	return lines
+}
+
+func recordItemText(item recordDataItem) string {
+	title := strings.TrimSpace(item.DataTitle)
+	desc := strings.TrimSpace(item.DataDesc)
+	switch recordItemType(item) {
+	case "text":
+		return firstNonEmpty(desc, title)
+	case "mini_program":
+		return bracketText("小程序", firstNonEmpty(title, item.AppBrand.SourceDisplayName))
+	case "file":
+		return bracketText("文件", title)
+	case "image":
+		return bracketText("图片", title)
+	case "video":
+		return bracketText("视频", title)
+	case "link":
+		return bracketText("链接", firstNonEmpty(title, desc))
+	default:
+		return firstNonEmpty(title, desc)
+	}
+}
+
+func recordItemsJSON(items []recordDataItem) string {
+	if len(items) == 0 {
+		return ""
+	}
+	out := make([]recordItemDetail, 0, len(items))
+	for _, item := range items {
+		out = append(out, recordItemDetail{
+			Type:             recordItemType(item),
+			DataType:         strings.TrimSpace(item.DataType),
+			SourceName:       strings.TrimSpace(item.SourceName),
+			SourceTime:       strings.TrimSpace(item.SourceTime),
+			Title:            strings.TrimSpace(item.DataTitle),
+			Desc:             strings.TrimSpace(item.DataDesc),
+			AppName:          strings.TrimSpace(item.AppBrand.SourceDisplayName),
+			AppID:            strings.TrimSpace(item.AppBrand.AppID),
+			AppUsername:      strings.TrimSpace(item.AppBrand.Username),
+			SrcMsgLocalID:    strings.TrimSpace(item.SrcMsgLocalID),
+			SrcMsgCreateTime: strings.TrimSpace(item.SrcMsgCreateTime),
+		})
+	}
+	data, err := json.Marshal(out)
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
+func recordItemType(item recordDataItem) string {
+	switch strings.TrimSpace(item.DataType) {
+	case "1":
+		return "text"
+	case "3":
+		return "image"
+	case "4", "5":
+		return "link"
+	case "6":
+		return "file"
+	case "19":
+		if strings.TrimSpace(item.AppBrand.AppID) != "" || strings.TrimSpace(item.AppBrand.Username) != "" || strings.TrimSpace(item.AppBrand.SourceDisplayName) != "" {
+			return "mini_program"
+		}
+		return "appmsg"
+	case "43":
+		return "video"
+	default:
+		return "unknown"
+	}
 }
 
 func parseMedia(raw string) (mediaMsg, bool) {
@@ -482,6 +666,15 @@ func quoteText(title string, referText ...string) string {
 	refer := firstNonEmpty(referText...)
 	if refer != "" {
 		text += "\n> [原消息]\n" + refer
+	}
+	return text
+}
+
+func chatRecordText(title string, recordText string) string {
+	text := bracketText("聊天记录", title)
+	recordText = strings.TrimSpace(recordText)
+	if recordText != "" {
+		text += "\n" + recordText
 	}
 	return text
 }
