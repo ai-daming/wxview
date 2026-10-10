@@ -530,15 +530,17 @@ GOCACHE=$(pwd)/.cache/go-build go run ./cmd/wxview timeline
 GOCACHE=$(pwd)/.cache/go-build
 ```
 
-## 与相邻项目的关系
+## 致谢与参考项目
 
-Wxview 参考并受益于这些项目：
+感谢以下项目及其作者公开实现与研究成果，Wxview 的开发从中受益：
 
+- [DaneelOlivaw1/macos-wechat-export](https://github.com/DaneelOlivaw1/macos-wechat-export)：新版 macOS 微信取钥的重要参考。v0.4.0 的内嵌 LLDB helper 改编自其 `capture_keys.py`（提交 `f6c5fb32306945fcb95740c3c2e70cbe548317dc`），用于临时副本启动、PBKDF 参数捕获与密钥验证；感谢作者分享这条技术路线。
+- [acmerfight 的原始 Gist](https://gist.github.com/acmerfight/0a01249ef72970d07a2603dbb629e80f)：`macos-wechat-export` 在 NOTICE 中注明的上游来源，感谢原作者公开 macOS 微信取钥实现。
 - [wechat-decrypt](https://github.com/ylytdeng/wechat-decrypt)：数据库 key 获取、SQLCipher 解密、图片 `.dat` 解码和媒体处理方向上的重要参考。
 - [wechat-cli](https://github.com/huohuoer/wechat-cli)：本地微信数据 CLI 化、AI Agent 使用方式和查询体验上的参考。
 - [wx-cli](https://github.com/jackwener/wx-cli)：命令设计、daemon/cache 思路、媒体解析和自动化输出上的参考。
 
-这些项目是参考和近邻工具，不是 Wxview 的运行时依赖。
+Wxview 不要求用户另行安装这些项目。改编的 LLDB helper 随二进制内嵌；其上游 MIT [LICENSE](internal/key/lldbhelper/LICENSE) 和 [NOTICE](internal/key/lldbhelper/NOTICE) 保留在源码、发布包及运行时私有工作目录中。
 
 ## 免责声明
 
