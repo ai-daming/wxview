@@ -268,57 +268,53 @@ Output:
 }
 
 func initUsage(w io.Writer) {
-	fmt.Fprintln(w, `wxview init - First-time setup for reading local WeChat data
+	fmt.Fprintln(w, `wxview init - Prepare verified keys for local WeChat databases
 
 Usage:
-  wxview init [--verbose]
-  go run ./cmd/wxview init [--verbose]
+  wxview init [--key-source scan] [--verbose]
+  wxview init --key-source lldb [--db-root /absolute/path/to/db_storage] [--verbose]
 
-When to run:
-  Run this at the beginning before using contacts/daemon.
-  In normal use, run it once. Run it again only if WeChat changes account,
-  contact/contact.db salt changes, the saved key becomes invalid, or WeChat is
-  reinstalled/updated in a way that changes the database key.
-
-What it does:
-  1. Detects the current WeChat 4.x account under macOS:
-     ~/Library/Containers/com.tencent.xinWeChat/Data/Documents/xwechat_files/<account>/db_storage
-     or Windows:
-     <data-root>\xwechat_files\<account>\db_storage
-  2. Finds required databases:
-     contact/contact.db
-     message/message_[number].db
-     and best-effort auxiliary message databases:
-     message/message_fts.db, message/message_resource.db, message/message_revoke.db
-  3. Reads each discovered DB page 1 salt.
-  4. Reuses existing valid keys from ~/.wxview/cache/<account>/keys.json, or
-     scans the running WeChat process memory for missing SQLCipher raw keys.
-  5. Verifies each key with page 1 HMAC.
-  6. Saves version 1 account metadata and keys in
-     ~/.wxview/cache/<account>/keys.json with mode 0600.
-
-Required DB key failures stop init. Auxiliary message DB failures are reported
-as warnings and can be retried later with wxview init. On macOS this usually
-means running with sudo; on Windows run the terminal as Administrator.
-
-Output fields:
-  account       WeChat account directory name.
-  data_dir      Source db_storage directory.
-  keys_total    Number of DB keys prepared.
-  keys_scanned  Number of keys found in this run.
-  keys_reused   Number of saved keys reused.
-  warnings      Optional DBs that could not be prepared in this run.
+Key sources:
+  scan (default) Reuse valid saved keys, then scan running WeChat for missing keys.
+                 macOS scanning may need sudo; Windows needs an Administrator terminal.
+  lldb           Native Apple Silicon macOS only; run WITHOUT sudo.
+                 Requires Apple Command Line Tools (xcode-select --install).
+                 Quit WeChat normally first. Wxview copies and signs a temporary
+                 app, launches it under LLDB, and waits up to 300 seconds for login
+                 and key capture. The original /Applications/WeChat.app is unchanged.
+                 Explicit lldb always captures, even when saved keys already exist.
 
 Flags:
-  --verbose     Also print each DB path, short key fingerprint, and status.
+  --key-source   scan|lldb; default scan.
+  --db-root      lldb only: real account db_storage under the current user's
+                 ~/Library/Containers/com.tencent.xinWeChat/Data/Documents/xwechat_files.
+                 Required when multiple local accounts exist; one account is automatic.
+  --verbose      Print per-DB paths, short fingerprints and captured/scanned/reused status.
 
-Notes:
-  The full key is never printed, even with --verbose.
-  Key scanning needs WeChat running and permission to read its process memory.
-  On macOS Hardened Runtime WeChat builds, sudo alone may not be enough; use a
-  local GUI terminal with Developer Tools permission or ad-hoc re-sign WeChat.
-  On Windows, run from an elevated terminal. If automatic path detection fails,
-  set WXVIEW_WECHAT_DB_STORAGE to the account db_storage directory.`)
+Results:
+  Saves verified version 1 keys to ~/.wxview/cache/<account>/keys.json (0600).
+  Required keys: contact/contact.db and message/message_[number].db.
+  Missing auxiliary keys warn. LLDB saves only when every required DB is covered
+  and at least one new candidate passes page 1 HMAC; failure preserves the old store.
+  Summary: account, data_dir, keys_total, keys_captured (lldb) or keys_scanned,
+  keys_reused and optional warnings. Full keys are never printed.
+  init prepares keys only; use existing query --refresh or daemon commands for caches.
+
+Recovery:
+  Complete any macOS data access prompt yourself. If access is denied, follow the
+  error's Files and Folders instructions, quit the temporary app, remove the named
+  ~/.wxview/bootstrap directory, and retry. Do not grant permissions automatically.
+  Ctrl-C cancels capture without saving; normal cleanup closes only this run's app.
+  After a forced interruption, quit the temporary app before manually removing
+  ~/.wxview/bootstrap. Existing workspaces are never resumed or deleted automatically.
+  Open the original /Applications/WeChat.app yourself after capture.
+  The temporary app uses real WeChat data; the original may require QR-code login.
+  Do not run initialization from different wxview versions concurrently.
+
+When to run:
+  Once before first use; repeat for a new account, invalid keys or new DB shards.
+  Ordinary queries never capture keys. On Windows, WXVIEW_WECHAT_DB_STORAGE may
+  specify the account db_storage directory when automatic discovery fails.`)
 }
 
 func meUsage(w io.Writer) {
@@ -1648,13 +1644,33 @@ func runInit(ctx context.Context, args []string, stdout io.Writer) error {
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	verbose := fs.Bool("verbose", false, "print per-database key fingerprints and statuses")
+	keySource := fs.String("key-source", "scan", "key source: scan or lldb")
+	dbRoot := fs.String("db-root", "", "explicit account db_storage for lldb")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() > 0 {
 		return fmt.Errorf("unexpected init argument: %s", fs.Arg(0))
 	}
-	ensureResult, err := key.EnsureSupportedKeys(ctx)
+	if *keySource != "scan" && *keySource != "lldb" {
+		return fmt.Errorf("--key-source must be scan or lldb")
+	}
+	if *dbRoot != "" && *keySource != "lldb" {
+		return fmt.Errorf("--db-root requires --key-source lldb")
+	}
+	unlock, err := lockInit()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	ctx, stop := signal.NotifyContext(ctx, daemonSignals()...)
+	defer stop()
+	var ensureResult key.EnsureKeysResult
+	if *keySource == "lldb" {
+		ensureResult, err = key.CaptureSupportedKeys(ctx, *dbRoot, stdout)
+	} else {
+		ensureResult, err = key.EnsureSupportedKeys(ctx)
+	}
 	if err != nil {
 		return err
 	}
@@ -1662,10 +1678,14 @@ func runInit(ctx context.Context, args []string, stdout io.Writer) error {
 	if len(results) == 0 {
 		return fmt.Errorf("no supported database found")
 	}
-	return writeInitOutput(stdout, results, ensureResult.Warnings, *verbose)
+	return writeInitOutputSource(stdout, results, ensureResult.Warnings, *verbose, *keySource)
 }
 
 func writeInitOutput(stdout io.Writer, results []key.EnsureResult, warnings []key.EnsureWarning, verbose bool) error {
+	return writeInitOutputSource(stdout, results, warnings, verbose, "scan")
+}
+
+func writeInitOutputSource(stdout io.Writer, results []key.EnsureResult, warnings []key.EnsureWarning, verbose bool, source string) error {
 	fmt.Fprintf(stdout, "account: %s\n", results[0].Target.Account)
 	fmt.Fprintf(stdout, "data_dir: %s\n", results[0].Target.DataDir)
 	fmt.Fprintf(stdout, "keys_total: %d\n", len(results))
@@ -1678,16 +1698,20 @@ func writeInitOutput(stdout io.Writer, results []key.EnsureResult, warnings []ke
 			scanned++
 		}
 	}
-	fmt.Fprintf(stdout, "keys_scanned: %d\n", scanned)
+	status := "scanned"
+	if source == "lldb" {
+		status = "captured"
+	}
+	fmt.Fprintf(stdout, "keys_%s: %d\n", status, scanned)
 	fmt.Fprintf(stdout, "keys_reused: %d\n", reused)
 	if verbose {
 		fmt.Fprintln(stdout, "keys:")
 		for _, res := range results {
-			status := "scanned"
+			rowStatus := status
 			if res.Reused {
-				status = "reused"
+				rowStatus = "reused"
 			}
-			fmt.Fprintf(stdout, "  %s fingerprint=%s status=%s\n", res.Target.DBRelPath, res.Entry.Fingerprint, status)
+			fmt.Fprintf(stdout, "  %s fingerprint=%s status=%s\n", res.Target.DBRelPath, res.Entry.Fingerprint, rowStatus)
 		}
 	}
 	if len(warnings) > 0 {

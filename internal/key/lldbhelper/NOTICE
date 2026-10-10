@@ -1,0 +1,26 @@
+macos-wechat-export
+===================
+
+本仓库是一套用于在本机导出 macOS 微信 4.x 聊天记录的小工具集，采用 MIT 许可证（见 LICENSE）。
+
+上游来源 / Upstream attribution
+--------------------------------
+本项目基于 acmerfight 公开的 Gist 整理、重写与扩展：
+
+  acmerfight's gist (MIT)
+  https://gist.github.com/acmerfight/0a01249ef72970d07a2603dbb629e80f
+
+原作者 acmerfight 保留其对原始 Gist 内容的著作权。本仓库在其基础上重写文档、
+调整发布结构并补充工具，同样以 MIT 许可证发布。请在再分发时保留本 NOTICE 与 LICENSE。
+
+This project is derived from, and attributes, the public gist by acmerfight
+(MIT). The original author retains copyright over the original gist content.
+Keep this NOTICE and LICENSE on redistribution.
+
+取钥原理还参考了以下公开实现（各自许可证以其仓库为准）：
+  - wxkey:  https://github.com/r266-tech/wxkey
+  - fomomo: https://github.com/nishuzumi/fomomo
+  - wcdb-key-tool: https://github.com/TANGandXUE/wcdb-key-tool
+
+第三方依赖（SQLCipher、pilk、MLX Whisper、Pillow、cryptography、FFmpeg 等）各自保留
+其许可证，本仓库不重新分发其源码、二进制或模型权重。

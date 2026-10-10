@@ -15,8 +15,8 @@ TeamIdentifier=5A4RE8SF68`
 	if !strings.Contains(hint, "Hardened Runtime") {
 		t.Fatalf("hint = %q", hint)
 	}
-	if !strings.Contains(hint, "codesign --force --deep --sign - /Applications/WeChat.app") {
-		t.Fatalf("hint missing re-sign command: %q", hint)
+	if !strings.Contains(hint, "wxview init --key-source lldb") {
+		t.Fatalf("hint missing temporary-copy command: %q", hint)
 	}
 }
 

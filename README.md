@@ -74,11 +74,28 @@ Windows 构建产物是：
 
 ### 2. 初始化账号和 key
 
-保持微信正在运行，然后执行：
+原有扫描方式（微信保持运行）：
 
 ```sh
 sudo ./bin/wxview init
 ```
+
+Apple Silicon 上还可显式使用临时副本取钥（需要 Apple Command Line Tools；不使用 sudo）：
+
+```sh
+# 先保存草稿并从微信菜单正常退出
+./bin/wxview init --key-source lldb
+# 存在多个本地账号时，明确指定目标账号
+./bin/wxview init --key-source lldb --db-root /absolute/path/to/account/db_storage
+```
+
+按提示在临时微信窗口登录指定账号、完成手机确认。最多收集 300 秒；成功或取消后会关闭本轮副本，
+请自行打开原版 `/Applications/WeChat.app`。原版签名不变。临时副本仍访问真实微信数据，微信自身可能
+更新登录状态和数据库。`--key-source lldb` 总会进行捕获；日常查询不重复取钥。
+
+本次在 macOS 27.0.1 / 原生 ARM64 / 微信 4.1.13 上完成取钥、必需库解密、查询与媒体抽样验收，
+正式入口与完整业务验收状态见 [升级 TODO](docs/plans/wechat-new-version-upgrade-todo.md)。其他版本、
+Intel/Rosetta 及 Windows 的新捕获路线不在本次支持承诺内。
 
 Windows 需要在管理员终端运行：
 
@@ -430,44 +447,38 @@ daemon 是内部缓存维护服务，不是 WebAPI。WebAPI 由 `wxview api star
 
 ## 权限和安全
 
-`wxview init` 需要读取正在运行的微信进程内存来获取数据库 key：
+默认 `wxview init --key-source scan` 在复用有效密钥后，扫描运行中的微信进程：macOS 可能需要 sudo
+和终端的 Developer Tools 权限，Windows 需要管理员终端。Hardened Runtime 可能导致
+`task_for_pid failed`，sudo 不能保证解决。原生 Apple Silicon 可以改用上面的临时副本入口。
 
-- macOS 通常需要 `sudo`；执行 `wxview` 命令的终端程序也需要能访问微信数据目录，
-  必要时授予 Full Disk Access。
-- Windows 需要管理员终端。
-- 如果 macOS 报 `task_for_pid failed`，通常是系统权限、签名或 Hardened Runtime 限制。
+### 临时副本取钥的依赖与恢复
 
-### macOS `task_for_pid failed`
+- 依赖：Apple Command Line Tools 的 `/usr/bin/python3` 与 LLDB。缺失时自行运行
+  `xcode-select --install`；wxview 会先检查，不自动安装或下载 helper。
+- 账号：退出微信后仅有一个本地账号才自动选择；多个账号必须用 `--db-root`，不按最近修改时间猜测。
+- 数据权限：若提示访问被拒绝，在“系统设置 → 隐私与安全 → 文件与文件夹 → 微信.app”中
+  打开微信数据访问项（本机显示为“微信”）。无需为此修改 SIP。系统授权由用户完成。
+- 没有授权入口时：失败会保留 `~/.wxview/bootstrap/WeChat-trial.app` 并给出路径；手动打开它触发
+  提示。授权后正常退出该副本，再删除 `~/.wxview/bootstrap/` 并重新执行命令。不要删除正式
+  `~/.wxview/cache/`。程序不会自动重试或修改系统授权。
+- 正常 Ctrl-C：取消且不保存候选，等待最多 10 秒让 helper 关闭自己的微信子进程。强杀、断电或
+  清理失败时，下次初始化拒绝使用残留工作目录。先正常退出临时微信，再手动删除该目录，重跑。
+- 如果提示“密钥已保存，清理未完成”：只处理明确指出的残留，然后打开原版；不必重新取钥。
+- 全部当前必需库必须有有效密钥，本轮也必须至少捕获一把有效新候选。否则正式密钥不变。
+  辅助库缺钥只警告；固定截止时间不是一律失败。保存前再次检查账号、当前分片与首页 HMAC。
+- `keys_saved: true` 只代表密钥保存，`cache_refreshed: false` 表示尚未更新解密缓存；之后运行
+  查询命令的 `--refresh` 或启动 daemon。缓存失败保留旧解密副本，不能把旧内容误认成刷新成功。
+- 同一新版 wxview 的 macOS 初始化互斥；不要同时运行不同版本的 init。密钥沿用 v1 格式，旧版
+  可继续读取，回退不需要迁移缓存。
 
-`task_for_pid failed` 表示 Wxview 没有拿到读取 WeChat 进程内存的权限。先检查
-WeChat.app 当前签名状态：
+已知 FTS 限制：微信的 contact/favorite/message FTS 索引使用私有 `MMFtsTokenizer`，普通 SQLite 的
+全文匹配与全库完整性检查可能报错。Wxview 的联系人、收藏、消息搜索读取正文或自己的派生索引，
+不直接查询这些微信 FTS 索引；不能据此认定密钥错误。媒体和业务验收范围见升级清单。
 
-```sh
-codesign -dv /Applications/WeChat.app 2>&1 | grep -E "Signature|flags"
-```
-
-- 如果看到 `flags=0x2(adhoc)` 或 `Signature=adhoc`，WeChat 已是 ad-hoc
-  签名，通常重新用 `sudo ./bin/wxview init` 即可。
-- 如果看到 `flags=0x10000(runtime)`，说明是带 Hardened Runtime 的官方签名。
-  实际执行命令的本机 GUI 终端程序加 `sudo` 通常可以触发系统授权；SSH 会话通常拿不到这个
-  Developer Tools 授权。
-- 如果确实需要在本机研究环境下稳定提取 key，可以先退出 WeChat，重签名为
-  ad-hoc，再重新打开 WeChat 登录后运行 `init`：
-
-```sh
-killall WeChat
-sudo xattr -cr /Applications/WeChat.app
-sudo codesign --force --deep --sign - /Applications/WeChat.app
-open /Applications/WeChat.app
-sudo ./bin/wxview init
-```
-
-这会修改 `/Applications/WeChat.app`。重签名后可能需要重新登录，微信更新后可能恢复官方签名，
-部分小程序或签名校验能力也可能受影响。只在自己的机器和有权处理的数据范围内使用。
-
-如果 `codesign` 报 `Operation not permitted`，说明执行 `codesign` 命令的终端程序没有修改
-`/Applications` 的权限。给实际执行命令的终端程序授予 Full Disk Access；如果从 SSH 操作，
-还需要给 `/usr/sbin/sshd` 和 `/usr/libexec/sshd-keygen-wrapper` 授权，并重新连接 SSH。
+Python helper 随二进制内嵌，不依赖项目源码或外部脚本下载。算法参考
+[DaneelOlivaw1/macos-wechat-export](https://github.com/DaneelOlivaw1/macos-wechat-export)
+的 `f6c5fb32306945fcb95740c3c2e70cbe548317dc`，按 MIT 许可保留
+[LICENSE](internal/key/lldbhelper/LICENSE) 与 [NOTICE](internal/key/lldbhelper/NOTICE)，运行时一并释放。
 
 Wxview 不会打印完整 DB key。`init --verbose` 只显示短 fingerprint 和逐库状态。
 
@@ -517,3 +528,5 @@ Wxview 参考并受益于这些项目：
 
 Wxview 只面向读取用户自己机器上的本地微信数据。请遵守当地法律、平台规则和隐私边界。
 不要用它读取、导出或传播你无权处理的数据。
+
+已观察到的登录副作用：本机微信 4.1.13 在临时副本取钥后，返回原版时要求重新扫码登录；用户已扫码进入。原版签名验证通过，但这不代表登录状态保持不变。不能承诺取钥后免扫码，后续日常使用正常，异常恢复测试后再次进入原版未要求扫码；不能据此保证所有环境的登录状态不变。

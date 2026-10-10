@@ -130,7 +130,7 @@ func CompactStoreFile(account string) error {
 }
 
 func flattenStoreFile(file storeFile) Store {
-	store := Store{Version: 1}
+	store := Store{Version: file.Version}
 	for relPath, key := range file.Keys {
 		store.Keys = append(store.Keys, Entry{
 			Account:     file.Account,

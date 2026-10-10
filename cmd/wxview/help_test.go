@@ -769,3 +769,19 @@ func TestKeyCommandIsNotAccepted(t *testing.T) {
 		t.Fatalf("key command should not be advertised:\n%s", out.String())
 	}
 }
+
+func TestInitCaptureOutputUsesCapturedStatus(t *testing.T) {
+	results := []key.EnsureResult{{Target: key.TargetDB{Account: "test", DataDir: "/test", DBRelPath: "contact/contact.db"}, Entry: key.Entry{Fingerprint: "short", Key: "must-not-print"}}}
+	var out bytes.Buffer
+	if err := writeInitOutputSource(&out, results, nil, true, "lldb"); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"keys_captured: 1", "status=captured"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("missing %s", want)
+		}
+	}
+	if strings.Contains(out.String(), "must-not-print") || strings.Contains(out.String(), "keys_scanned") {
+		t.Fatal("capture summary leaked key or used wrong source")
+	}
+}
