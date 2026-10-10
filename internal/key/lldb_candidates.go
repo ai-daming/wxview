@@ -144,7 +144,7 @@ func readCaptureFile(path string) (captureFile, error) {
 		return file, fmt.Errorf("unsupported capture format")
 	}
 	for rel, c := range file.Keys {
-		if rel == "" || filepath.IsAbs(rel) || filepath.ToSlash(filepath.Clean(rel)) != rel || strings.Contains(rel, "\\") || strings.HasPrefix(rel, "../") {
+		if rel == "" || strings.HasPrefix(rel, "/") || filepath.IsAbs(rel) || filepath.ToSlash(filepath.Clean(rel)) != rel || strings.Contains(rel, "\\") || strings.HasPrefix(rel, "../") {
 			return captureFile{}, fmt.Errorf("invalid candidate path")
 		}
 		key, e1 := hex.DecodeString(c.Key)

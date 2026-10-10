@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/md5"
 	"encoding/hex"
+	"encoding/json"
 	"encoding/xml"
 	"fmt"
 	"image"
@@ -679,7 +680,11 @@ func TestListEnrichesChatRecordItemMediaFromResourceDB(t *testing.T) {
 	if detail["record_media_count"] != "1" || detail["record_media_resolved"] != "1" {
 		t.Fatalf("unexpected record media counters: %+v", detail)
 	}
-	if !strings.Contains(detail["record_items_json"], `"media_status":"resolved"`) || !strings.Contains(detail["record_items_json"], `"thumbnail_path":"`+imagePath+`"`) {
+	var items []map[string]string
+	if err := json.Unmarshal([]byte(detail["record_items_json"]), &items); err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0]["media_status"] != "resolved" || items[0]["thumbnail_path"] != imagePath {
 		t.Fatalf("record item media was not enriched: %+v", detail)
 	}
 }

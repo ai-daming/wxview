@@ -144,3 +144,30 @@ verdict: READY
 Implementation Gate: READY。基线仍为 a4b2a2c791c3461e22742e3cc6c82d11eb18aef1；复用上面的 VerifiedDesignReceipt。本阶段增量仅版本号、说明、CI与发布验证，不改变取钥算法、数据结构或生命周期。用户明确授权“先做代码审查，没问题就提交推送，然后需要发新版本”。执行代理负责在第10步记录CI、发布与发布资产回读结果；本地证据和公开摘要分开保存。
 
 最小CI只运行已有Go测试/vet、Python合成测试及平台构建，不读用户微信数据、不取钥、不自动发布。新版本使用当前已验收实现；发布资产在下载回读后运行版本、已有密钥初始化与限定会话查询验收，完整LLDB捕获与异常恢复沿用同一运行实现的实机证据，不为版本号重复要求退出/登录。
+
+### CI跨平台修复增量准入
+
+Implementation Gate: READY。当前基线685034ffbc4814b4d5a705887da3465d77c78337。相对前次回执，CI发现JSON候选的斜杠路径在Windows不被filepath.IsAbs判为绝对路径；修复为所有平台显式拒绝根斜杠，沿用第4节非法路径拒绝不变量，生产消费者与文件格式不变。另外修正两项旧测试的Windows用户目录隔离与JSON转义断言，不改缓存清理或媒体运行逻辑。用户已授权修复、复验和发布。
+
+```yaml
+kind: VerifiedDesignReceipt
+version: 1
+work_id: wechat-new-version-upgrade
+baseline_sha: 685034ffbc4814b4d5a705887da3465d77c78337
+scope: 候选路径跨平台校验与测试移植性修复
+architecture:
+  artifacts: [docs/plans/2026-10-10-wechat-upgrade-scope-design.md]
+  acceptance_source: 已接受简化v2及本轮完成TODO授权
+  acceptance_evidence: 继续第10步，先做代码审查，没问题就提交推送，然后需要发新版本；完成todo
+coverage:
+  algorithms: 第4节候选非法路径拒绝；Windows根斜杠仍必须拒绝
+  data_structures: 第3节candidates.json，格式不变
+  cross_trace: readCaptureFile校验JSON路径，mergeCapturedKeys再核对目标白名单
+  invariants: 不接受绝对路径、路径逃逸或其他账号目标
+  failures_recovery: 校验失败不提交正式密钥；沿用第5节
+  migration: 无格式迁移，Windows取钥仍为原scan
+open_material_items: []
+verified_by: Codex
+verified_at: 2026-10-10
+verdict: READY
+```

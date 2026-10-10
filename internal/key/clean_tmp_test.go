@@ -10,6 +10,7 @@ import (
 func TestCleanTmpRemovesExpiredCacheTmpAndSkipsIndex(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	t.Setenv("SUDO_USER", "")
 	cacheTmp := filepath.Join(home, ".wxview", "cache", "wxid_a", "message", "message_fts.db.123.tmp")
 	freshTmp := filepath.Join(home, ".wxview", "cache", "wxid_a", "message", "message_0.db.456.tmp")
