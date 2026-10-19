@@ -173,8 +173,8 @@ func CaptureSupportedKeys(ctx context.Context, requested string, progress io.Wri
 	if progress == nil {
 		progress = io.Discard
 	}
-	if runtime.GOARCH != "arm64" {
-		return result, fmt.Errorf("LLDB capture requires native Apple Silicon (no Intel/Rosetta)")
+	if runtime.GOARCH != "arm64" && runtime.GOARCH != "amd64" {
+		return result, fmt.Errorf("LLDB capture requires macOS arm64 or amd64")
 	}
 	if os.Geteuid() == 0 {
 		return result, fmt.Errorf("run LLDB capture as the logged-in user, without sudo")

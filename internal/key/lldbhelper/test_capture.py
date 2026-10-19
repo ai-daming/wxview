@@ -1,7 +1,7 @@
 """Synthetic tests only: no WeChat app, account, database or real key is used.
 
 Run pure tests: python3 -B -m unittest discover -s internal/key/lldbhelper
-Run LLDB integration on Apple Silicon with CLT:
+Run LLDB integration on macOS ARM64 or Intel with CLT:
   WXVIEW_TEST_LLDB=1 /usr/bin/python3 -B -m unittest discover -s internal/key/lldbhelper
 """
 import hashlib
@@ -54,7 +54,7 @@ class CryptoTests(unittest.TestCase):
 
 
 @unittest.skipUnless(os.environ.get('WXVIEW_TEST_LLDB') == '1' and
-                     platform.system() == 'Darwin' and platform.machine() == 'arm64',
+                     platform.system() == 'Darwin' and platform.machine() in ('arm64', 'x86_64'),
                      'opt-in Apple LLDB integration')
 class LLDBTests(unittest.TestCase):
     def run_fixture(self, mode):

@@ -277,7 +277,7 @@ Usage:
 Key sources:
   scan (default) Reuse valid saved keys, then scan running WeChat for missing keys.
                  macOS scanning may need sudo; Windows needs an Administrator terminal.
-  lldb           Native Apple Silicon macOS only; run WITHOUT sudo.
+  lldb           macOS Apple Silicon or experimental Intel; run WITHOUT sudo.
                  Requires Apple Command Line Tools (xcode-select --install).
                  Quit WeChat normally first. Wxview copies and signs a temporary
                  app, launches it under LLDB, and waits up to 300 seconds for login
