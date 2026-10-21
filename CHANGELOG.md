@@ -2,6 +2,45 @@
 
 All notable changes to Wxview are documented here.
 
+## 0.4.1 - 2026-10-21
+
+### Added
+
+- Stable message pagination for CLI and WebAPI: explicit `--order asc|desc`
+  with `--cursor` continuation over the full sort key
+  `(create_time, seq, local_id, source_db)`, interchangeable between the
+  derived index and shard scans. The first page without an explicit end bound
+  freezes it to the current Unix second; `meta.next_cursor` / `meta.next_args`
+  / `next_url` carry fixed bounds. Legacy ASC reads keep `next_after_seq`.
+- `daemon status` now reports account probe count, probe failures, cumulative
+  probe milliseconds, and message-directory scan counts.
+
+### Changed
+
+- Daemon watchers now share one account/path snapshot: account probing every
+  20s, message shard directory checks every 5s, known-file checks every 1s.
+  Concurrent and failed probes are coalesced; macOS background account
+  selection requires positive open-file evidence and no longer falls back to
+  mtime ordering. Message DB discovery no longer re-probes the account per
+  database group.
+- All daemon cache refresh entrypoints (including index preparation) are
+  serialized; triggers arriving during a long refresh coalesce into at most
+  one pending callback. Windows and unsupported platforms keep their previous
+  account discovery policy; no new process probing was introduced there.
+- Stable-pagination reads use the existing cache only and no longer
+  initialize missing caches implicitly; legacy reads keep the old fallback.
+- Date parsing now handles 23/25-hour DST calendar days via local-calendar
+  arithmetic.
+
+## 0.4.0 - 2026-10-10
+
+### Added
+
+- macOS Apple Silicon temporary-copy LLDB key capture
+  (`wxview init --key-source lldb`), verified on WeChat 4.1.13; embedded
+  helper with no external script download. Experimental Intel support was
+  added after the release tag. Windows keeps the existing scan path.
+
 ## 0.3.1 - 2026-05-21
 
 ### Changed
