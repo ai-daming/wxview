@@ -9,5 +9,5 @@ import (
 )
 
 func CaptureSupportedKeys(ctx context.Context, root string, progress io.Writer) (EnsureKeysResult, error) {
-	return EnsureKeysResult{}, fmt.Errorf("LLDB key capture requires native Apple Silicon macOS")
+	return EnsureKeysResult{}, fmt.Errorf("LLDB key capture requires macOS")
 }

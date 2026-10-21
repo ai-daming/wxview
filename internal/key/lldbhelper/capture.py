@@ -88,8 +88,14 @@ def run(exe, target_file, out, timeout):
     app_log = out.parent / 'app-stderr.log'
     try:
         target = debugger.CreateTarget(str(exe))
-        if not target.IsValid() or not target.GetTriple().startswith('arm64'):
+        if not target.IsValid():
             raise RuntimeError('unsupported target')
+        arch = (target.GetTriple() or '').split('-')[0]
+        if arch not in ('arm64', 'arm64e', 'x86_64'):
+            raise RuntimeError('unsupported target')
+        # Stack arguments on x86_64 must be read before the function prologue.
+        if arch == 'x86_64':
+            debugger.HandleCommand('settings set target.skip-prologue false')
         bp = target.BreakpointCreateByName('CCKeyDerivationPBKDF')
         if not bp.IsValid():
             raise RuntimeError('breakpoint unavailable')
@@ -129,7 +135,16 @@ def run(exe, target_file, out, timeout):
                             continue
                         hit = True
                         frame = thread.GetFrameAtIndex(0)
-                        args = [frame.FindRegister('x' + str(i)).GetValueAsUnsigned() for i in range(1, 7)]
+                        if arch == 'x86_64':
+                            args = [frame.FindRegister(r).GetValueAsUnsigned()
+                                    for r in ('rsi', 'rdx', 'rcx', 'r8', 'r9')]
+                            stack = frame.FindRegister('rsp').GetValueAsUnsigned()
+                            rounds_bytes = mem(stack + 8, 4)
+                            if len(rounds_bytes) != 4:
+                                continue
+                            args.append(int.from_bytes(rounds_bytes, 'little'))
+                        else:
+                            args = [frame.FindRegister('x' + str(i)).GetValueAsUnsigned() for i in range(1, 7)]
                         pp, pl, sp, sl, prf, rounds = args
                         if not (sl == 16 and 0 < pl <= 256 and prf == 5 and rounds in (2, 256000)):
                             continue

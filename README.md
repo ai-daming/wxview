@@ -29,7 +29,7 @@ Wxview 的重点是清楚的本地缓存边界和稳定的机器输出：`init` 
 
 当前支持：
 
-- macOS 微信 4.x 数据读取；v0.4.0 新取钥方式实测为 Apple Silicon / 微信 4.1.13，其他 4.1.x 版本尚未验证。
+- macOS 微信 4.x 数据读取；v0.4.0 新取钥方式实测为 Apple Silicon / 微信 4.1.13，当前源码另提供实验性 Intel 支持，已在 Intel / 微信 4.1.15 验证取钥和基本查询。
 - Windows 微信 4.x 既有扫描/读取能力（`xwechat_files\<account>\db_storage` 数据布局）；本次不承诺 Windows 新版取钥支持。
 - `contact/contact.db`、`session/session.db`、`message/message_*.db`
 - 可选数据面：`message/biz_message_*.db`、`message/media_*.db`、`message/message_resource.db`、`message/message_revoke.db`、`head_image/head_image.db`、`favorite/favorite.db`、`sns/sns.db`
@@ -96,7 +96,7 @@ Windows 构建产物是：
 sudo ./bin/wxview init
 ```
 
-Apple Silicon 上还可显式使用临时副本取钥（需要 Apple Command Line Tools；不使用 sudo）：
+Apple Silicon 和 Intel（实验性支持，需从当前源码构建）上还可显式使用临时副本取钥（需要 Apple Command Line Tools；不使用 sudo）：
 
 ```sh
 # 先保存草稿并从微信菜单正常退出
@@ -110,8 +110,8 @@ Apple Silicon 上还可显式使用临时副本取钥（需要 Apple Command Lin
 更新登录状态和数据库。`--key-source lldb` 总会进行捕获；日常查询不重复取钥。
 
 本次在 macOS 27.0.1 / 原生 ARM64 / 微信 4.1.13 上完成取钥、必需库解密、查询与媒体抽样验收，
-正式入口与完整业务验收状态见 [升级 TODO](docs/plans/wechat-new-version-upgrade-todo.md)。其他版本、
-Intel/Rosetta 及 Windows 的新捕获路线不在本次支持承诺内。
+正式入口与完整业务验收状态见 [升级 TODO](docs/plans/wechat-new-version-upgrade-todo.md)。Intel 实验性支持已在 macOS 26.5.1 / Intel Core i9 / 微信 4.1.15 上完成取钥、缓存生成及基本查询验证，详见初始化指南。
+Rosetta、其他未验证版本及 Windows 的新捕获路线不在支持承诺内。
 
 Windows 需要在管理员终端运行：
 
@@ -465,7 +465,7 @@ daemon 是内部缓存维护服务，不是 WebAPI。WebAPI 由 `wxview api star
 
 默认 `wxview init --key-source scan` 在复用有效密钥后，扫描运行中的微信进程：macOS 可能需要 sudo
 和终端的 Developer Tools 权限，Windows 需要管理员终端。Hardened Runtime 可能导致
-`task_for_pid failed`，sudo 不能保证解决。原生 Apple Silicon 可以改用上面的临时副本入口。
+`task_for_pid failed`，sudo 不能保证解决。原生 Apple Silicon 和 Intel（实验性支持）可以改用上面的临时副本入口。
 
 ### 临时副本取钥的依赖与恢复
 
