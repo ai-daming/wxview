@@ -55,3 +55,37 @@ func TestNormalizeRefreshScope(t *testing.T) {
 		t.Fatal("expected invalid scope error")
 	}
 }
+
+func TestMessageRangeCalendarDaysAcrossDST(t *testing.T) {
+	loc, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := time.Local
+	time.Local = loc
+	t.Cleanup(func() { time.Local = old })
+	for _, tc := range []struct {
+		day   string
+		hours int64
+	}{{"2026-03-08", 23}, {"2026-11-01", 25}} {
+		got, err := ParseMessageRange(tc.day, "", "", time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.End-got.Start+1 != tc.hours*3600 {
+			t.Fatalf("%s duration=%d", tc.day, got.End-got.Start+1)
+		}
+		bounds, err := ParseMessageRange("", tc.day, tc.day, time.Now())
+		if err != nil || bounds != got {
+			t.Fatalf("date and bounds differ: %v %v", bounds, err)
+		}
+	}
+	a, err := ParseMessageRange("", "2026-10-21T00:00:00+08:00", "2026-10-21T00:00:00+08:00", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := ParseMessageRange("", "2026-10-20T16:00:00Z", "2026-10-20T16:00:00Z", time.Now())
+	if err != nil || a != b {
+		t.Fatalf("equivalent timezones differ: %v %v", b, err)
+	}
+}

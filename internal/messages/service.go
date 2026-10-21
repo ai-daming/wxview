@@ -74,6 +74,8 @@ type MessageSource struct {
 }
 
 type QueryOptions struct {
+	Order         string
+	After         *PageKey
 	Username      string
 	Start         int64
 	End           int64
@@ -137,13 +139,26 @@ func (s Service) List(ctx context.Context, opts QueryOptions) ([]Message, error)
 		return nil, fmt.Errorf("message cache does not exist: run `wxview messages --refresh --username %s` first", username)
 	}
 
+	order, err := NormalizeOrder(opts.Order)
+	if err != nil {
+		return nil, err
+	}
+	opts.Order = order
+	if opts.Limit > 0 && opts.Offset > int(^uint(0)>>1)-opts.Limit {
+		return nil, fmt.Errorf("limit plus offset is too large")
+	}
 	tableName := TableName(username)
-	var out []Message
+	type candidate struct {
+		row    queryRow
+		source string
+	}
+	var candidates []candidate
+	less := func(i, j int) bool {
+		a, b := candidates[i], candidates[j]
+		return PageKeyLess(PageKey{a.row.CreateTime, a.row.SortSeq, a.row.LocalID, a.source}, PageKey{b.row.CreateTime, b.row.SortSeq, b.row.LocalID, b.source}, order)
+	}
 	for _, dbPath := range s.CacheDBs {
 		if _, err := os.Stat(dbPath); err != nil {
-			if os.IsNotExist(err) {
-				return nil, fmt.Errorf("message cache missing: %s", dbPath)
-			}
 			return nil, err
 		}
 		exists, err := tableExists(ctx, dbPath, tableName)
@@ -157,25 +172,22 @@ func (s Service) List(ctx context.Context, opts QueryOptions) ([]Message, error)
 		if err != nil {
 			return nil, err
 		}
-		sourceDB := filepath.Base(dbPath)
 		for _, row := range rows {
-			out = append(out, normalizeRow(username, tableName, sourceDB, opts.IncludeSource, row))
+			candidates = append(candidates, candidate{row, filepath.Base(dbPath)})
+		}
+		sort.Slice(candidates, less)
+		if opts.Limit > 0 && len(candidates) > opts.Limit+opts.Offset {
+			candidates = candidates[:opts.Limit+opts.Offset]
 		}
 	}
-
-	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].CreateTime != out[j].CreateTime {
-			return out[i].CreateTime < out[j].CreateTime
-		}
-		if out[i].Seq != out[j].Seq {
-			return out[i].Seq < out[j].Seq
-		}
-		if out[i].LocalID != out[j].LocalID {
-			return out[i].LocalID < out[j].LocalID
-		}
-		return out[i].SourceDB < out[j].SourceDB
-	})
-	page := paginate(out, opts.Limit, opts.Offset)
+	start := opts.Offset
+	if start > len(candidates) {
+		start = len(candidates)
+	}
+	page := make([]Message, 0, len(candidates)-start)
+	for _, c := range candidates[start:] {
+		page = append(page, normalizeRow(username, tableName, c.source, opts.IncludeSource, c.row))
+	}
 	if opts.MediaResolver != nil {
 		EnrichMediaDetails(page, opts.MediaResolver)
 	}
@@ -370,10 +382,26 @@ func queryDB(ctx context.Context, dbPath string, tableName string, opts QueryOpt
 		clauses = append(clauses, "sort_seq > ?")
 		args = append(args, opts.AfterSeq)
 	}
+	if opts.After != nil {
+		op := ">"
+		if opts.Order == "desc" {
+			op = "<"
+		}
+		clauses = append(clauses, "(create_time, sort_seq, local_id, ?) "+op+" (?, ?, ?, ?)")
+		args = append(args, filepath.Base(dbPath), opts.After.CreateTime, opts.After.Seq, opts.After.LocalID, opts.After.SourceDB)
+	}
 	if len(clauses) > 0 {
 		whereSQL = "WHERE " + strings.Join(clauses, " AND ")
 	}
-	query := messageRowsQuery(tableName, whereSQL) + " ORDER BY create_time ASC, sort_seq ASC, local_id ASC;"
+	direction := " ASC"
+	if opts.Order == "desc" {
+		direction = " DESC"
+	}
+	query := messageRowsQuery(tableName, whereSQL) + " ORDER BY create_time" + direction + ", sort_seq" + direction + ", local_id" + direction
+	if opts.Limit > 0 {
+		query += fmt.Sprintf(" LIMIT %d", opts.Limit+opts.Offset)
+	}
+	query += ";"
 	db, err := sqlitedb.OpenReadOnly(ctx, dbPath)
 	if err != nil {
 		return nil, err

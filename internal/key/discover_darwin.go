@@ -36,7 +36,13 @@ type TargetDB struct {
 	DBPath    string
 }
 
-func DiscoverContactDB() (TargetDB, error) {
+func DiscoverContactDB() (TargetDB, error) { return discoverContactDB(false) }
+
+// DiscoverWatcherAccount requires positive evidence from WeChat open files.
+// Background probe failures must never silently select a different mtime account.
+func DiscoverWatcherAccount() (TargetDB, error) { return discoverContactDB(true) }
+
+func discoverContactDB(requireActive bool) (TargetDB, error) {
 	home, err := app.HomeDir()
 	if err != nil {
 		return TargetDB{}, err
@@ -69,7 +75,20 @@ func DiscoverContactDB() (TargetDB, error) {
 	if len(candidates) == 0 {
 		return TargetDB{}, fmt.Errorf("no WeChat contact database found under %s", root)
 	}
-	return chooseContactCandidate(candidates, wechatOpenDataDirScores(root)), nil
+	scores := wechatOpenDataDirScores(root)
+	if requireActive {
+		active := candidates[:0]
+		for _, candidate := range candidates {
+			if scores[filepath.Clean(candidate.DataDir)] > 0 {
+				active = append(active, candidate)
+			}
+		}
+		if len(active) == 0 {
+			return TargetDB{}, fmt.Errorf("active WeChat account is unavailable; retrying after the probe interval")
+		}
+		candidates = active
+	}
+	return chooseContactCandidate(candidates, scores), nil
 }
 
 func DiscoverMessageDBs() ([]TargetDB, error) {
@@ -137,22 +156,11 @@ func discoverMessageDBsByPrefix(contactTarget TargetDB, prefix string) ([]Target
 }
 
 func DiscoverMessageRelatedDBs() ([]TargetDB, error) {
-	targets, err := DiscoverMessageDBs()
+	target, err := DiscoverContactDB()
 	if err != nil {
 		return nil, err
 	}
-	if bizTargets, err := DiscoverBizMessageDBs(); err == nil {
-		targets = append(targets, bizTargets...)
-	}
-	if mediaTargets, err := DiscoverMediaDBs(); err == nil {
-		targets = append(targets, mediaTargets...)
-	}
-	auxTargets, err := DiscoverMessageAuxDBs()
-	if err != nil {
-		return nil, err
-	}
-	targets = append(targets, auxTargets...)
-	return targets, nil
+	return AccountMessageTargets(target)
 }
 
 func DiscoverMessageAuxDBs() ([]TargetDB, error) {

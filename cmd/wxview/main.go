@@ -886,8 +886,10 @@ Flags:
   --date today|yesterday|YYYY-MM-DD
                    Select one full local day. Cannot be combined with --start
                    or --end.
-  --after-seq N    Return rows with seq greater than N. Use this for cursor-style
-                   "next page after this message" reads.
+  --order asc|desc Stable pagination order (requires --limit > 0). Default: asc.
+  --cursor TOKEN  Continue using meta.next_args; do not combine with offset/after-seq.
+  --after-seq N    Legacy seq-only filter. Prefer explicit --order and next_args
+                   for stable pagination when timestamps or seq values repeat.
   --limit N        Return at most N rows after global time sorting. 0 means no limit.
   --offset N       Skip N rows after global time sorting.
   --source         Include source DB/table/local row metadata for debugging.
@@ -896,8 +898,8 @@ Flags:
                    valid, so use "2>trace.log" to capture it.
   --refresh        Decrypt message/message_*.db shards and supported
                    message-related DBs into the local cache before querying. Without --refresh,
-                   uses the existing complete cache when available; otherwise
-                   refreshes in this process.
+                   stable pagination requires an existing cache. Legacy calls
+                   retain their cache-initialization fallback.
 
 Output fields:
   id                Stable local message id for this cache row.
@@ -913,7 +915,7 @@ Output fields:
   direction         out, in, or unknown.
   is_self           Whether this row is from the local user.
   is_chatroom       Whether chat_username is a group chat.
-  seq               WeChat sort sequence; pass it to --after-seq for cursor reads.
+  seq               WeChat sort sequence; used by the legacy --after-seq filter.
   server_id         WeChat server message id when present.
   create_time       Unix timestamp from WeChat.
   time              Local formatted time.
@@ -933,11 +935,16 @@ JSON output:
   meta.schema_version identifies the envelope contract, and meta.timezone shows
   the local timezone used to interpret --date, --start, --end, and date-only
   bounds.
-  meta.next_after_seq and meta.next_args are included when another page exists.
-  Reliable clients should continue with meta.next_args rather than --offset.
+  Explicit --order asc|desc enables stable pagination. meta.order reports the
+  direction; meta.next_cursor and meta.next_args are included when more rows exist.
+  Without --order/--cursor, legacy ASC calls retain meta.next_after_seq.
+  Continue with meta.next_args to preserve the cursor, direction and fixed time
+  bounds. Do not combine stable pagination with --offset or --after-seq.
+  The last page has no continuation cursor or next_args.
   jsonl, csv, and table outputs remain item-only.
 
 Examples:
+  wxview messages --username wxid_xxx --order desc --limit 100 --format json
   wxview messages --username wxid_xxx --format table
   wxview messages --username wxid_xxx --date today --limit 100 --format json
   wxview messages --username wxid_xxx --start "2026-05-01" --end "2026-05-14" --format json
@@ -950,9 +957,12 @@ Runtime behavior:
   derived message index is ready and near-realtime, it uses the index to select
   page row refs and then reads full rows from the original decrypted caches. If
   the index is missing, building, interrupted, too stale, or unusable, it falls
-  back to the old shard scan. Use --no-index to compare or debug the scan path.
-  Results remain sorted by create_time ascending, then seq, source local id,
-  and source shard.
+  back to a bounded shard scan for limited queries. Use --no-index to compare
+  or debug the scan path. The full sort key is (create_time, seq, local_id,
+  source_db): ascending by default, or descending with --order desc.
+  Stable pagination requires --limit > 0. If --end is omitted, the first page
+  fixes it to the current Unix second; continuation arguments preserve it.
+  Fixed bounds do not provide a snapshot across inserts, backfills or deletes.
   Image and video messages in the returned page are resolved to local files
   automatically. WeChat .dat images and recognizable .dat videos are decoded
   or normalized into ~/.wxview/cache/<account>/media/.
@@ -1877,6 +1887,9 @@ func runDaemonStatus(args []string, stdout io.Writer) error {
 			fmt.Fprintf(stdout, "daemon_version: %s\n", resp.Version)
 		}
 		fmt.Fprintln(stdout, "status: running")
+		if resp.Discovery != nil {
+			fmt.Fprintf(stdout, "account_probes: %d\nprobe_failures: %d\nprobe_milliseconds: %d\ndirectory_scans: %d\n", resp.Discovery.AccountProbes, resp.Discovery.ProbeFailures, resp.Discovery.ProbeMilliseconds, resp.Discovery.DirectoryScans)
+		}
 		return nil
 	}
 	fmt.Fprintln(stdout, "status: stopped")
@@ -2503,6 +2516,8 @@ func runMessages(ctx context.Context, args []string, stdout io.Writer, stderr io
 	dateText := fs.String("date", "", "today, yesterday, or YYYY-MM-DD")
 	startText := fs.String("start", "", "inclusive start time")
 	endText := fs.String("end", "", "inclusive end time")
+	order := fs.String("order", "", "asc or desc; enables stable cursor pagination")
+	cursor := fs.String("cursor", "", "opaque continuation cursor")
 	afterSeq := fs.Int64("after-seq", 0, "return rows with seq greater than this value")
 	limit := fs.Int("limit", 0, "maximum rows to return after sorting; 0 means no limit")
 	offset := fs.Int("offset", 0, "rows to skip after sorting")
@@ -2540,17 +2555,20 @@ func runMessages(ctx context.Context, args []string, stdout io.Writer, stderr io
 	trace.Mark("parse_range", traceBool("has_start", rangeValue.HasStart), traceBool("has_end", rangeValue.HasEnd))
 	usernameValue := strings.TrimSpace(*username)
 	result, err := wxquery.NewRuntime().Messages(ctx, wxquery.MessagesRequest{
-		Username:      usernameValue,
-		AfterSeq:      *afterSeq,
-		Date:          *dateText,
-		StartText:     *startText,
-		EndText:       *endText,
-		IncludeSource: *includeSource,
-		Limit:         *limit,
-		Offset:        *offset,
-		NoIndex:       *noIndex,
-		WantHasMore:   *format == "json",
-		CacheMode:     wxquery.CacheMode{Refresh: *refresh},
+		Username:                 usernameValue,
+		Order:                    *order,
+		Cursor:                   *cursor,
+		LegacyPaginationProvided: flagProvided(args, "offset") || flagProvided(args, "after-seq"),
+		AfterSeq:                 *afterSeq,
+		Date:                     *dateText,
+		StartText:                *startText,
+		EndText:                  *endText,
+		IncludeSource:            *includeSource,
+		Limit:                    *limit,
+		Offset:                   *offset,
+		NoIndex:                  *noIndex,
+		WantHasMore:              *format == "json",
+		CacheMode:                wxquery.CacheMode{Refresh: *refresh},
 	})
 	if err != nil {
 		return err
@@ -2561,6 +2579,8 @@ func runMessages(ctx context.Context, args []string, stdout io.Writer, stderr io
 			SchemaVersion:      messageEnvelopeSchemaVersion,
 			Timezone:           wxquery.LocalTimezoneName(),
 			Mode:               "messages",
+			Order:              result.Order,
+			NextCursor:         result.NextCursor,
 			queryExecutionMeta: result.Execution,
 			Username:           usernameValue,
 			Start:              wxquery.FormatMetaTime(result.Range.Start, result.Range.HasStart),
@@ -2572,6 +2592,9 @@ func runMessages(ctx context.Context, args []string, stdout io.Writer, stderr io
 		if result.HasMore && result.NextAfterSeq > 0 {
 			meta.NextAfterSeq = result.NextAfterSeq
 			meta.NextArgs = buildMessagesNextArgs(usernameValue, result.Range.Start, result.Range.HasStart, result.Range.End, result.Range.HasEnd, meta.NextAfterSeq, *limit, *includeSource, *noIndex)
+		}
+		if result.NextCursor != "" {
+			meta.NextArgs = buildMessagesCursorArgs(usernameValue, result, *limit, *includeSource, *noIndex)
 		}
 		err := writeMessageEnvelope(stdout, meta, result.Items)
 		trace.Mark("write_output", "format=json", traceInt("returned", len(result.Items)))
@@ -2938,6 +2961,8 @@ func runSNSNotifications(ctx context.Context, args []string, stdout io.Writer) e
 }
 
 type messagesMeta struct {
+	Order         string `json:"order"`
+	NextCursor    string `json:"next_cursor,omitempty"`
 	SchemaVersion int    `json:"schema_version"`
 	Timezone      string `json:"timezone"`
 	Mode          string `json:"mode"`
@@ -4071,4 +4096,21 @@ func cleanCell(s string) string {
 	s = strings.ReplaceAll(s, "\r", " ")
 	s = strings.ReplaceAll(s, "\n", " ")
 	return s
+}
+
+func buildMessagesCursorArgs(username string, result wxquery.MessagesResult, limit int, source, noIndex bool) []string {
+	args := []string{"messages", "--username", username, "--order", result.Order, "--cursor", result.NextCursor, "--limit", strconv.Itoa(limit), "--format", "json"}
+	if result.Range.HasStart {
+		args = append(args, "--start", strconv.FormatInt(result.Range.Start, 10))
+	}
+	if result.Range.HasEnd {
+		args = append(args, "--end", strconv.FormatInt(result.Range.End, 10))
+	}
+	if source {
+		args = append(args, "--source")
+	}
+	if noIndex {
+		args = append(args, "--no-index")
+	}
+	return args
 }

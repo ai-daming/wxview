@@ -3,6 +3,7 @@ package query
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -113,20 +114,25 @@ type SessionsResult struct {
 }
 
 type MessagesRequest struct {
-	Username      string
-	Date          string
-	StartText     string
-	EndText       string
-	AfterSeq      int64
-	Limit         int
-	Offset        int
-	IncludeSource bool
-	NoIndex       bool
-	WantHasMore   bool
+	Order                    string
+	Cursor                   string
+	LegacyPaginationProvided bool
+	Username                 string
+	Date                     string
+	StartText                string
+	EndText                  string
+	AfterSeq                 int64
+	Limit                    int
+	Offset                   int
+	IncludeSource            bool
+	NoIndex                  bool
+	WantHasMore              bool
 	CacheMode
 }
 
 type MessagesResult struct {
+	Order        string
+	NextCursor   string
 	Target       key.TargetDB
 	Items        []messages.Message
 	Range        TimeRange
@@ -433,6 +439,24 @@ func (rt Runtime) Sessions(ctx context.Context, req SessionsRequest) (SessionsRe
 }
 
 func (rt Runtime) Messages(ctx context.Context, req MessagesRequest) (MessagesResult, error) {
+	rt = rt.withDefaults()
+	order, err := messages.NormalizeOrder(req.Order)
+	if err != nil {
+		return MessagesResult{}, err
+	}
+	paged := req.Order != "" || req.Cursor != ""
+	if req.Limit < 0 || req.Offset < 0 || req.AfterSeq < 0 || req.Limit == int(^uint(0)>>1) {
+		return MessagesResult{}, fmt.Errorf("invalid pagination limit, offset or after-seq")
+	}
+	if paged && (req.AfterSeq != 0 || req.Offset != 0 || req.LegacyPaginationProvided) {
+		return MessagesResult{}, fmt.Errorf("order/cursor cannot be combined with offset or after-seq")
+	}
+	if req.Cursor != "" && req.Order == "" {
+		return MessagesResult{}, fmt.Errorf("cursor requires explicit order")
+	}
+	if paged && req.Limit <= 0 {
+		return MessagesResult{}, fmt.Errorf("order/cursor pagination requires limit > 0")
+	}
 	username := strings.TrimSpace(req.Username)
 	if username == "" {
 		return MessagesResult{}, fmt.Errorf("username is required")
@@ -441,11 +465,38 @@ func (rt Runtime) Messages(ctx context.Context, req MessagesRequest) (MessagesRe
 	if err != nil {
 		return MessagesResult{}, err
 	}
+	if paged && !rangeValue.HasEnd {
+		if req.Cursor != "" {
+			return MessagesResult{}, fmt.Errorf("cursor requires the fixed end from the first page")
+		}
+		rangeValue.End, rangeValue.HasEnd = rt.Now().Unix(), true
+	}
+	if rangeValue.HasStart && rangeValue.HasEnd && rangeValue.Start > rangeValue.End {
+		return MessagesResult{}, fmt.Errorf("start must not be later than end")
+	}
+	if req.Refresh {
+		if err := refreshMessageCaches(ctx); err != nil {
+			return MessagesResult{}, err
+		}
+	}
 	target, err := rt.ContactTarget()
 	if err != nil {
 		return MessagesResult{}, err
 	}
-	cachePaths, err := rt.MessageCachePaths(ctx, req.CacheMode)
+	identity := messagePageIdentity{target.Account, target.DataDir, username, order, rangeValue.Start, rangeValue.End, rangeValue.HasStart, rangeValue.HasEnd}
+	var after *messages.PageKey
+	if req.Cursor != "" {
+		after, err = decodeMessageCursor(req.Cursor, identity)
+		if err != nil {
+			return MessagesResult{}, err
+		}
+	}
+	// Pin metadata lookups to the same account for the duration of this request.
+	rt.DiscoverContact = func() (key.TargetDB, error) { return target, nil }
+	cachePaths, err := key.AccountMessageCachePaths(ctx, target, false)
+	if err != nil && !paged && !req.ReadOnly && !req.Refresh && errors.Is(err, os.ErrNotExist) {
+		cachePaths, err = key.AccountMessageCachePaths(ctx, target, true)
+	}
 	if err != nil {
 		return MessagesResult{}, err
 	}
@@ -456,6 +507,8 @@ func (rt Runtime) Messages(ctx context.Context, req MessagesRequest) (MessagesRe
 	service := messages.NewService(cachePaths)
 	list, execution, err := ListMessagesMaybeIndex(ctx, target.Account, cachePaths, service, !req.NoIndex, messages.QueryOptions{
 		Username:      username,
+		Order:         order,
+		After:         after,
 		Start:         rangeValue.Start,
 		End:           rangeValue.End,
 		AfterSeq:      req.AfterSeq,
@@ -469,14 +522,19 @@ func (rt Runtime) Messages(ctx context.Context, req MessagesRequest) (MessagesRe
 	if err != nil {
 		return MessagesResult{}, err
 	}
-	rt.EnrichMessageMedia(target, list)
-	messages.ApplyChatInfo(list, rt.ChatInfoMapForUsernames(ctx, username))
 	page, hasMore := trimMessagePage(list, req.Limit)
+	rt.EnrichMessageMedia(target, page)
+	messages.ApplyChatInfo(page, rt.ChatInfoMapForUsernames(ctx, username))
 	nextAfterSeq := int64(0)
 	if hasMore && len(page) > 0 {
 		nextAfterSeq = page[len(page)-1].Seq
 	}
-	return MessagesResult{Target: target, Items: page, Range: rangeValue, Execution: execution, HasMore: hasMore, NextAfterSeq: nextAfterSeq}, nil
+	nextCursor := ""
+	if paged && hasMore && len(page) > 0 {
+		nextCursor = encodeMessageCursor(identity, messages.KeyForPage(page[len(page)-1]))
+		nextAfterSeq = 0
+	}
+	return MessagesResult{Order: order, NextCursor: nextCursor, Target: target, Items: page, Range: rangeValue, Execution: execution, HasMore: hasMore, NextAfterSeq: nextAfterSeq}, nil
 }
 
 func (rt Runtime) Search(ctx context.Context, req SearchRequest) (SearchResult, error) {
@@ -1166,8 +1224,12 @@ func mediaResolverFor(target key.TargetDB) (*media.Resolver, error) {
 			resourceDBs = append(resourceDBs, path)
 		}
 	}
-	if paths, _, err := key.MediaCachePaths(); err == nil {
-		for _, path := range paths {
+	if targets, err := key.AccountShards(target, "media_"); err == nil {
+		for _, mediaTarget := range targets {
+			path, err := key.CachePath(target.Account, mediaTarget.DBRelPath)
+			if err != nil {
+				continue
+			}
 			if info, statErr := os.Stat(path); statErr == nil && !info.IsDir() {
 				resourceDBs = append(resourceDBs, path)
 			}
@@ -1191,6 +1253,8 @@ func ListMessagesMaybeIndex(ctx context.Context, account string, cachePaths []st
 	})
 	if ok {
 		refs, err := msgindex.MessageRefs(ctx, indexPath, msgindex.MessageQuery{
+			Order:       opts.Order,
+			After:       opts.After,
 			Username:    opts.Username,
 			Start:       opts.Start,
 			End:         opts.End,
@@ -1277,8 +1341,10 @@ func queryIndexUsability(ctx context.Context, account string, cachePaths []strin
 		return "", msgindex.Usability{Reason: "index_path_error"}, false
 	}
 	if strings.TrimSpace(opts.SessionCachePath) == "" {
-		if target, path, ok := key.SessionCachePathIfExists(); ok && target.Account == account {
-			opts.SessionCachePath = path
+		if path, err := key.CachePath(account, "session/session.db"); err == nil {
+			if info, err := os.Stat(path); err == nil && !info.IsDir() {
+				opts.SessionCachePath = path
+			}
 		}
 	}
 	usability, err := msgindex.UseForQuery(ctx, indexPath, cachePaths, opts)
@@ -1385,13 +1451,13 @@ func parseDateRange(value string, now time.Time) (int64, int64, error) {
 	value = strings.TrimSpace(value)
 	switch value {
 	case "today":
-		year, month, day := now.Date()
+		year, month, day := now.In(time.Local).Date()
 		start := time.Date(year, month, day, 0, 0, 0, 0, time.Local)
-		return start.Unix(), start.Add(24*time.Hour - time.Second).Unix(), nil
+		return start.Unix(), start.AddDate(0, 0, 1).Add(-time.Second).Unix(), nil
 	case "yesterday":
-		year, month, day := now.AddDate(0, 0, -1).Date()
+		year, month, day := now.In(time.Local).AddDate(0, 0, -1).Date()
 		start := time.Date(year, month, day, 0, 0, 0, 0, time.Local)
-		return start.Unix(), start.Add(24*time.Hour - time.Second).Unix(), nil
+		return start.Unix(), start.AddDate(0, 0, 1).Add(-time.Second).Unix(), nil
 	default:
 		start, hasStart, err := parseTimeBound(value, "date", false)
 		if err != nil {
@@ -1401,7 +1467,7 @@ func parseDateRange(value string, now time.Time) (int64, int64, error) {
 		if err != nil || !hasStart || !hasEnd {
 			return 0, 0, fmt.Errorf("invalid date %q: use today, yesterday, or YYYY-MM-DD", value)
 		}
-		if end-start != 24*60*60-1 {
+		if _, err := time.ParseInLocation("2006-01-02", value, time.Local); err != nil {
 			return 0, 0, fmt.Errorf("invalid date %q: use today, yesterday, or YYYY-MM-DD", value)
 		}
 		return start, end, nil
@@ -1437,7 +1503,7 @@ func parseTimeBound(value string, field string, isEnd bool) (int64, bool, error)
 			continue
 		}
 		if item.dateOnly && isEnd {
-			t = t.Add(24*time.Hour - time.Second)
+			t = t.AddDate(0, 0, 1).Add(-time.Second)
 		}
 		return t.Unix(), true, nil
 	}
