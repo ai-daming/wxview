@@ -331,7 +331,12 @@ func TestMessagesHelpIsActionable(t *testing.T) {
 		"meta.schema_version",
 		"meta.timezone",
 		"meta.next_args",
-		"create_time ascending",
+		"ascending by default, or descending with --order desc",
+		"--order asc|desc",
+		"--cursor TOKEN",
+		"meta.next_cursor",
+		"legacy ASC calls retain meta.next_after_seq",
+		"The last page has no continuation cursor or next_args",
 		"message/message_*.db",
 	} {
 		if !strings.Contains(text, want) {

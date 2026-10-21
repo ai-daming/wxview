@@ -915,7 +915,7 @@ Output fields:
   direction         out, in, or unknown.
   is_self           Whether this row is from the local user.
   is_chatroom       Whether chat_username is a group chat.
-  seq               WeChat sort sequence; pass it to --after-seq for cursor reads.
+  seq               WeChat sort sequence; used by the legacy --after-seq filter.
   server_id         WeChat server message id when present.
   create_time       Unix timestamp from WeChat.
   time              Local formatted time.
@@ -935,11 +935,16 @@ JSON output:
   meta.schema_version identifies the envelope contract, and meta.timezone shows
   the local timezone used to interpret --date, --start, --end, and date-only
   bounds.
-  meta.next_after_seq and meta.next_args are included when another page exists.
-  Reliable clients should continue with meta.next_args rather than --offset.
+  Explicit --order asc|desc enables stable pagination. meta.order reports the
+  direction; meta.next_cursor and meta.next_args are included when more rows exist.
+  Without --order/--cursor, legacy ASC calls retain meta.next_after_seq.
+  Continue with meta.next_args to preserve the cursor, direction and fixed time
+  bounds. Do not combine stable pagination with --offset or --after-seq.
+  The last page has no continuation cursor or next_args.
   jsonl, csv, and table outputs remain item-only.
 
 Examples:
+  wxview messages --username wxid_xxx --order desc --limit 100 --format json
   wxview messages --username wxid_xxx --format table
   wxview messages --username wxid_xxx --date today --limit 100 --format json
   wxview messages --username wxid_xxx --start "2026-05-01" --end "2026-05-14" --format json
@@ -952,9 +957,12 @@ Runtime behavior:
   derived message index is ready and near-realtime, it uses the index to select
   page row refs and then reads full rows from the original decrypted caches. If
   the index is missing, building, interrupted, too stale, or unusable, it falls
-  back to the old shard scan. Use --no-index to compare or debug the scan path.
-  Results remain sorted by create_time ascending, then seq, source local id,
-  and source shard.
+  back to a bounded shard scan for limited queries. Use --no-index to compare
+  or debug the scan path. The full sort key is (create_time, seq, local_id,
+  source_db): ascending by default, or descending with --order desc.
+  Stable pagination requires --limit > 0. If --end is omitted, the first page
+  fixes it to the current Unix second; continuation arguments preserve it.
+  Fixed bounds do not provide a snapshot across inserts, backfills or deletes.
   Image and video messages in the returned page are resolved to local files
   automatically. WeChat .dat images and recognizable .dat videos are decoded
   or normalized into ~/.wxview/cache/<account>/media/.
