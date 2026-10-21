@@ -64,3 +64,5 @@ func DiscoverSNSDB() (TargetDB, bool) {
 func DiscoverHeadImageDB() (TargetDB, bool) {
 	return TargetDB{}, false
 }
+
+func DiscoverWatcherAccount() (TargetDB, error) { return DiscoverContactDB() }

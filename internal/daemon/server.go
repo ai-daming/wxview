@@ -8,6 +8,8 @@ import (
 	"log"
 	"net"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -18,6 +20,8 @@ import (
 )
 
 type Server struct {
+	discovery  discoverySnapshot
+	refreshMu  sync.Mutex
 	SocketPath string
 	Shutdown   func()
 
@@ -132,34 +136,63 @@ func (s *Server) refresh(ctx context.Context) error {
 }
 
 func (s *Server) refreshContact(ctx context.Context) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	res, _, err := key.EnsureContactCache(ctx)
+	s.refreshMu.Lock()
+	defer s.refreshMu.Unlock()
+	target, _, err := s.discovery.get()
 	if err != nil {
 		return err
 	}
+	res, _, err := key.EnsureDBCache(ctx, target)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
 	s.target = res.Target
+	s.mu.Unlock()
 	return nil
 }
 
 func (s *Server) refreshMessages(ctx context.Context) error {
-	_, err := key.EnsureMessageRelatedCaches(ctx)
-	return err
-}
-
-func (s *Server) refreshIndex(ctx context.Context) error {
-	s.indexMu.Lock()
-	defer s.indexMu.Unlock()
-	res, contactCache, err := key.EnsureContactCache(ctx)
+	s.refreshMu.Lock()
+	defer s.refreshMu.Unlock()
+	_, targets, err := s.discovery.get()
 	if err != nil {
 		return err
 	}
-	messagePaths, err := key.EnsureMessageCaches(ctx)
+	for _, target := range targets {
+		if _, _, err := key.EnsureDBCache(ctx, target); err != nil {
+			if strings.HasPrefix(filepath.Base(target.DBPath), "message_") && strings.HasSuffix(filepath.Base(target.DBPath), ".db") {
+				// Only numeric message shards are required; auxiliary caches are best effort.
+				name := strings.TrimSuffix(strings.TrimPrefix(filepath.Base(target.DBPath), "message_"), ".db")
+				if name != "" && strings.Trim(name, "0123456789") == "" {
+					return err
+				}
+			}
+			log.Printf("optional message cache refresh skipped: %v", err)
+		}
+	}
+	return nil
+}
+
+func (s *Server) refreshIndex(ctx context.Context) error {
+	s.refreshMu.Lock()
+	defer s.refreshMu.Unlock()
+	s.indexMu.Lock()
+	defer s.indexMu.Unlock()
+	target, _, err := s.discovery.get()
+	if err != nil {
+		return err
+	}
+	res, contactCache, err := key.EnsureDBCache(ctx, target)
+	if err != nil {
+		return err
+	}
+	messagePaths, err := key.AccountMessageCachePaths(ctx, target, true)
 	if err != nil {
 		return err
 	}
 	sessionPath := ""
-	if _, path, err := key.EnsureSessionCache(ctx); err != nil {
+	if _, path, err := key.EnsureDBCache(ctx, key.TargetFor(target, "session/session.db")); err != nil {
 		log.Printf("refresh session cache skipped before index refresh: %v", err)
 	} else {
 		sessionPath = path
@@ -225,34 +258,67 @@ func (s *Server) refreshIndexBackground(ctx context.Context, reason string) {
 }
 
 func (s *Server) refreshSessions(ctx context.Context) error {
-	_, _, err := key.EnsureSessionCache(ctx)
+	s.refreshMu.Lock()
+	defer s.refreshMu.Unlock()
+	account, _, err := s.discovery.get()
+	if err != nil {
+		return err
+	}
+	target, err := existingTarget(account, "session/session.db")
+	if err != nil {
+		return err
+	}
+	_, _, err = key.EnsureDBCache(ctx, target)
 	return err
 }
 
 func (s *Server) refreshHeadImage(ctx context.Context) error {
-	_, _, err := key.EnsureHeadImageCache(ctx)
+	s.refreshMu.Lock()
+	defer s.refreshMu.Unlock()
+	account, _, err := s.discovery.get()
+	if err != nil {
+		return err
+	}
+	target, err := existingTarget(account, "head_image/head_image.db")
+	if err != nil {
+		return err
+	}
+	_, _, err = key.EnsureDBCache(ctx, target)
 	return err
 }
 
 func (s *Server) refreshFavorites(ctx context.Context) error {
-	_, _, err := key.EnsureFavoriteCache(ctx)
+	s.refreshMu.Lock()
+	defer s.refreshMu.Unlock()
+	account, _, err := s.discovery.get()
+	if err != nil {
+		return err
+	}
+	target, err := existingTarget(account, "favorite/favorite.db")
+	if err != nil {
+		return err
+	}
+	_, _, err = key.EnsureDBCache(ctx, target)
 	return err
 }
 
 func (s *Server) refreshSNS(ctx context.Context) error {
-	_, _, err := key.EnsureSNSCache(ctx)
+	s.refreshMu.Lock()
+	defer s.refreshMu.Unlock()
+	account, _, err := s.discovery.get()
+	if err != nil {
+		return err
+	}
+	target, err := existingTarget(account, "sns/sns.db")
+	if err != nil {
+		return err
+	}
+	_, _, err = key.EnsureDBCache(ctx, target)
 	return err
 }
 
 func (s *Server) watchContacts(ctx context.Context) {
-	paths := func() []string {
-		target, err := key.DiscoverContactDB()
-		if err != nil {
-			log.Printf("discover contact database failed: %v", err)
-			return nil
-		}
-		return []string{target.DBPath}
-	}
+	paths := func() []string { return s.watchPaths("contact/contact.db") }
 	WatchFiles(ctx, paths, time.Second, time.Second, func() {
 		if err := s.refreshContact(ctx); err != nil {
 			log.Printf("refresh contact cache failed: %v", err)
@@ -263,18 +329,7 @@ func (s *Server) watchContacts(ctx context.Context) {
 }
 
 func (s *Server) watchMessages(ctx context.Context) {
-	paths := func() []string {
-		targets, err := key.DiscoverMessageRelatedDBs()
-		if err != nil {
-			log.Printf("discover message databases failed: %v", err)
-			return nil
-		}
-		out := make([]string, 0, len(targets))
-		for _, target := range targets {
-			out = append(out, target.DBPath)
-		}
-		return out
-	}
+	paths := func() []string { return s.watchPaths("messages") }
 	WatchFiles(ctx, paths, time.Second, time.Second, func() {
 		if err := s.refreshMessages(ctx); err != nil {
 			log.Printf("refresh message caches failed: %v", err)
@@ -286,13 +341,7 @@ func (s *Server) watchMessages(ctx context.Context) {
 }
 
 func (s *Server) watchSessions(ctx context.Context) {
-	paths := func() []string {
-		target, ok := key.DiscoverSessionDB()
-		if !ok {
-			return nil
-		}
-		return []string{target.DBPath}
-	}
+	paths := func() []string { return s.watchPaths("session/session.db") }
 	WatchFiles(ctx, paths, time.Second, time.Second, func() {
 		if err := s.refreshSessions(ctx); err != nil {
 			log.Printf("refresh session cache failed: %v", err)
@@ -303,13 +352,7 @@ func (s *Server) watchSessions(ctx context.Context) {
 }
 
 func (s *Server) watchHeadImage(ctx context.Context) {
-	paths := func() []string {
-		target, ok := key.DiscoverHeadImageDB()
-		if !ok {
-			return nil
-		}
-		return []string{target.DBPath}
-	}
+	paths := func() []string { return s.watchPaths("head_image/head_image.db") }
 	WatchFiles(ctx, paths, time.Second, time.Second, func() {
 		if err := s.refreshHeadImage(ctx); err != nil {
 			log.Printf("refresh head_image cache failed: %v", err)
@@ -320,13 +363,7 @@ func (s *Server) watchHeadImage(ctx context.Context) {
 }
 
 func (s *Server) watchFavorites(ctx context.Context) {
-	paths := func() []string {
-		target, ok := key.DiscoverFavoriteDB()
-		if !ok {
-			return nil
-		}
-		return []string{target.DBPath}
-	}
+	paths := func() []string { return s.watchPaths("favorite/favorite.db") }
 	WatchFiles(ctx, paths, time.Second, time.Second, func() {
 		if err := s.refreshFavorites(ctx); err != nil {
 			log.Printf("refresh favorite cache failed: %v", err)
@@ -337,13 +374,7 @@ func (s *Server) watchFavorites(ctx context.Context) {
 }
 
 func (s *Server) watchSNS(ctx context.Context) {
-	paths := func() []string {
-		target, ok := key.DiscoverSNSDB()
-		if !ok {
-			return nil
-		}
-		return []string{target.DBPath}
-	}
+	paths := func() []string { return s.watchPaths("sns/sns.db") }
 	WatchFiles(ctx, paths, time.Second, time.Second, func() {
 		if err := s.refreshSNS(ctx); err != nil {
 			log.Printf("refresh sns cache failed: %v", err)
@@ -362,7 +393,8 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 	}
 	switch req.Action {
 	case ActionHealth:
-		_ = json.NewEncoder(conn).Encode(Response{OK: true, Message: "ok", Version: buildinfo.String()})
+		stats := s.discovery.statistics()
+		_ = json.NewEncoder(conn).Encode(Response{OK: true, Message: "ok", Version: buildinfo.String(), Discovery: &stats})
 	case ActionRefreshContacts:
 		if err := s.refreshContact(ctx); err != nil {
 			_ = json.NewEncoder(conn).Encode(Response{OK: false, Message: err.Error()})

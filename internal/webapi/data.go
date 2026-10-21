@@ -7,6 +7,7 @@ import (
 	"wxview/internal/articles"
 	"wxview/internal/contacts"
 	"wxview/internal/favorites"
+	"wxview/internal/key"
 	"wxview/internal/messages"
 	wxquery "wxview/internal/query"
 	"wxview/internal/sessions"
@@ -39,6 +40,7 @@ type ListMeta struct {
 
 	NextURL      string `json:"next_url,omitempty"`
 	NextCursor   string `json:"next_cursor,omitempty"`
+	Order        string `json:"order,omitempty"`
 	NextAfterSeq int64  `json:"next_after_seq,omitempty"`
 
 	Mode            string `json:"mode,omitempty"`
@@ -288,29 +290,36 @@ func (h *handler) handleMessages(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_no_index", err.Error())
 		return
 	}
-	_, _, info, err := h.resolveAccount(r.Context(), false)
+	target, _, info, err := h.resolveAccount(r.Context(), false)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "account_discovery_failed", err.Error())
 		return
 	}
-	result, err := h.queryRuntime().Messages(r.Context(), wxquery.MessagesRequest{
-		Username:      username,
-		Date:          q.Get("date"),
-		StartText:     q.Get("start"),
-		EndText:       q.Get("end"),
-		AfterSeq:      afterSeq,
-		Limit:         limit,
-		Offset:        offset,
-		IncludeSource: includeSource,
-		NoIndex:       noIndex,
-		WantHasMore:   true,
-		CacheMode:     wxquery.CacheMode{ReadOnly: true},
+	runtime := h.queryRuntime()
+	runtime.DiscoverContact = func() (key.TargetDB, error) { return target, nil }
+	result, err := runtime.Messages(r.Context(), wxquery.MessagesRequest{
+		Username:                 username,
+		Order:                    q.Get("order"),
+		Cursor:                   q.Get("cursor"),
+		LegacyPaginationProvided: q.Has("offset") || q.Has("after_seq"),
+		Date:                     q.Get("date"),
+		StartText:                q.Get("start"),
+		EndText:                  q.Get("end"),
+		AfterSeq:                 afterSeq,
+		Limit:                    limit,
+		Offset:                   offset,
+		IncludeSource:            includeSource,
+		NoIndex:                  noIndex,
+		WantHasMore:              true,
+		CacheMode:                wxquery.CacheMode{ReadOnly: true},
 	})
 	if err != nil {
 		writeQueryError(w, "messages_query_failed", err)
 		return
 	}
 	meta := h.messageMeta(info, "messages", limit, len(result.Items), result.Execution)
+	meta.Order = result.Order
+	meta.NextCursor = result.NextCursor
 	meta.Offset = intPtr(offset)
 	meta.Username = username
 	meta.Start = wxquery.FormatMetaTime(result.Range.Start, result.Range.HasStart)
@@ -320,6 +329,10 @@ func (h *handler) handleMessages(w http.ResponseWriter, r *http.Request) {
 		meta.NextAfterSeq = result.NextAfterSeq
 		meta.NextURL = nextMessagesURL(r, meta.NextAfterSeq, limit)
 	}
+	if result.NextCursor != "" {
+		meta.NextURL = nextMessagesCursorURL(r, result)
+	}
+
 	h.attachMediaURLs(result.Items)
 	writeJSON(w, http.StatusOK, ItemsResponse[messages.Message]{Meta: meta, Items: result.Items})
 }

@@ -17,7 +17,8 @@ type Request struct {
 }
 
 type Response struct {
-	OK      bool   `json:"ok"`
-	Message string `json:"message,omitempty"`
-	Version string `json:"version,omitempty"`
+	Discovery *DiscoveryStats `json:"discovery,omitempty"`
+	OK        bool            `json:"ok"`
+	Message   string          `json:"message,omitempty"`
+	Version   string          `json:"version,omitempty"`
 }

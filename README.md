@@ -142,6 +142,12 @@ Windows 需要在管理员终端运行：
 2. 监听联系人、会话、消息、媒体、头像、收藏和 SNS 数据库变化。
 3. 后台维护 `~/.wxview/cache/<account>/index/messages.db` 消息索引。
 
+六组 watcher 共享账号/数据库路径快照：账号探测间隔 20 秒，消息分片目录检查间隔
+5 秒，已知文件仍每秒检查。账号切换及新增分片不是一秒内保证；刷新还需等待防抖和实际处理。
+macOS 活跃账号探测失败时暂停本轮刷新，20 秒后重试，不回退到其他账号的 mtime。
+各刷新入口串行写缓存；耗时 watcher 回调期间的新触发合并为至多一次待处理回调。
+更新二进制不会热更新已运行的 daemon，需以后重启服务才会应用这些后台改动。
+
 确认状态：
 
 ```sh
@@ -275,7 +281,7 @@ V1 不做异步 job。宽查询和本地媒体读取仍是同步 HTTP 请求，�
 | `GET /v1/members` | `username` 或 `query` |
 | `GET /v1/sessions` | `kind`、`query`、`limit`、`offset` |
 | `GET /v1/unread` | `kind`、`query`、`limit`、`offset` |
-| `GET /v1/messages` | `username`、`date`、`start`、`end`、`after_seq`、`limit`、`offset`、`source`、`no_index` |
+| `GET /v1/messages` | `username`、`date`、`start`、`end`、`order`、`cursor`、`after_seq`、`limit`、`offset`、`source`、`no_index` |
 | `GET /v1/search` | `query`、`kind`、`chat_query`、`username`、`date`、`start`、`end`、`limit`、`offset`、`source` |
 | `GET /v1/timeline` | `username` 或 `kind/query`，再加 `date` 或 `start/end`、`limit`、`cursor`、`source`、`no_index` |
 | `GET /v1/new-messages` | `limit`、`source`；只预览，不推进 checkpoint |
@@ -412,6 +418,36 @@ JSON 输出使用 `{meta, items}` envelope：
 
 可靠分页时直接执行 `meta.next_args`。`--offset` 更适合临时人工查看，不建议作为长期
 同步游标。
+
+### 最近消息与稳定分页
+
+```sh
+./bin/wxview messages --username wxid_xxx --order desc --limit 100 --format json
+./bin/wxview messages --username wxid_xxx --start '2026-10-01' --end '2026-10-21' --order desc --limit 100 --format json
+```
+
+显式传入 `--order asc|desc` 启用稳定分页，必须设置正数 `--limit`；后续请求直接使用
+`meta.next_args`。CLI 新增 `meta.order` / `meta.next_cursor`，WebAPI 对应
+`GET /v1/messages?username=wxid_xxx&order=desc&limit=100` 和 `meta.next_url`。
+这些是 schema v1 的附加元数据，消息 item schema 不变。末页没有 `next_cursor` 或下一页参数。
+
+排序键为 `(create_time, seq, local_id, source_db)`，desc 对完整键倒序。
+游标绑定账号及数据目录身份、会话、方向、规范化起止范围；损坏、不支持的版本或
+跨查询复用会报错。游标不含正文、密钥或原始账号路径，校验和只检测损坏，不是授权凭证。
+不能与 `--offset` / `--after-seq` 混用（即使显式传 0 也拒绝）。未传 `--order` 的旧调用
+继续默认 ASC，并保留旧 `next_after_seq` 协议；需要稳定翻页的新客户端应显式选择 order。
+
+未提供结束时间时，第一页固定为请求时的 Unix 秒；`next_args` / `next_url` 使用固定的
+Unix 秒边界，不延续 `today` 等相对日期。起止均包含边界，日期按本地日历解释。
+固定 end 不是快照：新增消息若在 end 之后不会出现；回填在游标之后的排序区间可能出现，
+回填在已翻过的区间不会补发；删除会缩短后续结果。缓存刷新保留源分片名和 local_id 时可续页，
+若迁移重建改变行身份，应重新开始。索引失效回退扫描仍使用相同游标语义。
+
+新分页普通浏览只读取已有缓存；缺缓存会提示初始化/刷新，不隐式获取密钥。
+显式 `--refresh` 仍执行刷新。扫描路径每个分片最多取 `limit + 1` 条候选，逐分片有界合并，
+仅对最终页做正文处理；媒体处理不包含用于判断 has_more 的额外记录。没有全量 count。
+这限制了 Go 的加载和解析量，但缺少排序索引时 SQLite 仍可能扫描全表并临时排序。
+详见 [实现与验证记录](docs/message-pagination-and-daemon.md)。
 
 消息正文规则：
 

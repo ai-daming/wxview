@@ -116,22 +116,11 @@ func discoverMessageDBsByPrefix(contactTarget TargetDB, prefix string) ([]Target
 }
 
 func DiscoverMessageRelatedDBs() ([]TargetDB, error) {
-	targets, err := DiscoverMessageDBs()
+	target, err := DiscoverContactDB()
 	if err != nil {
 		return nil, err
 	}
-	if bizTargets, err := DiscoverBizMessageDBs(); err == nil {
-		targets = append(targets, bizTargets...)
-	}
-	if mediaTargets, err := DiscoverMediaDBs(); err == nil {
-		targets = append(targets, mediaTargets...)
-	}
-	auxTargets, err := DiscoverMessageAuxDBs()
-	if err != nil {
-		return nil, err
-	}
-	targets = append(targets, auxTargets...)
-	return targets, nil
+	return AccountMessageTargets(target)
 }
 
 func DiscoverMessageAuxDBs() ([]TargetDB, error) {
@@ -424,3 +413,5 @@ func chooseContactCandidate(candidates []TargetDB, openScores map[string]int) Ta
 	})
 	return candidates[0]
 }
+
+func DiscoverWatcherAccount() (TargetDB, error) { return DiscoverContactDB() }

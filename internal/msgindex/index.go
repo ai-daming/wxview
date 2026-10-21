@@ -126,6 +126,8 @@ type CleanResult struct {
 }
 
 type MessageQuery struct {
+	Order       string
+	After       *messages.PageKey
 	Username    string
 	Start       int64
 	End         int64
@@ -770,6 +772,10 @@ func MessageRefs(ctx context.Context, indexPath string, query MessageQuery) ([]m
 	if query.Limit < 0 || query.Offset < 0 {
 		return nil, fmt.Errorf("limit and offset must be >= 0")
 	}
+	order, err := messages.NormalizeOrder(query.Order)
+	if err != nil {
+		return nil, err
+	}
 	tableName := messages.TableName(username)
 	ok, err := chatTableExists(ctx, indexPath, tableName)
 	if err != nil {
@@ -793,11 +799,23 @@ func MessageRefs(ctx context.Context, indexPath string, query MessageQuery) ([]m
 		clauses = append(clauses, "sort_seq > ?")
 		args = append(args, query.AfterSeq)
 	}
+	if query.After != nil {
+		op := ">"
+		if order == "desc" {
+			op = "<"
+		}
+		clauses = append(clauses, "(create_time, sort_seq, local_id, source_db) "+op+" (?, ?, ?, ?)")
+		args = append(args, query.After.CreateTime, query.After.Seq, query.After.LocalID, query.After.SourceDB)
+	}
+	direction := " ASC"
+	if order == "desc" {
+		direction = " DESC"
+	}
 	stmt := `
 SELECT source_db, table_name, chat_username, local_id
 FROM message_index
 WHERE ` + strings.Join(clauses, " AND ") + `
-ORDER BY create_time ASC, sort_seq ASC, local_id ASC, source_db ASC`
+ORDER BY create_time` + direction + ", sort_seq" + direction + ", local_id" + direction + ", source_db" + direction
 	stmt += limitOffsetSQL(query.Limit, query.Offset)
 	stmt += ";"
 	return queryRefs(ctx, indexPath, stmt, args...)

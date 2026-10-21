@@ -151,6 +151,7 @@ func writeQueryError(w http.ResponseWriter, code string, err error) {
 		writeError(w, http.StatusNotFound, "not_found", msg)
 	case strings.Contains(lower, "invalid") ||
 		strings.Contains(lower, "required") ||
+		strings.Contains(lower, "requires") ||
 		strings.Contains(lower, "cannot be combined") ||
 		strings.Contains(lower, "must be"):
 		writeError(w, http.StatusBadRequest, code, msg)
@@ -221,4 +222,23 @@ func contactDetailItem(item contacts.Detail) ContactDetailItem {
 		AvatarURL:    mediaURL(item.AvatarPath),
 		AvatarReason: item.AvatarReason,
 	}
+}
+
+func nextMessagesCursorURL(r *http.Request, result wxquery.MessagesResult) string {
+	next := *r.URL
+	values := next.Query()
+	values.Del("date")
+	values.Del("offset")
+	values.Del("after_seq")
+	values.Del("refresh")
+	values.Set("order", result.Order)
+	values.Set("cursor", result.NextCursor)
+	if result.Range.HasStart {
+		values.Set("start", strconv.FormatInt(result.Range.Start, 10))
+	}
+	if result.Range.HasEnd {
+		values.Set("end", strconv.FormatInt(result.Range.End, 10))
+	}
+	next.RawQuery = values.Encode()
+	return next.RequestURI()
 }

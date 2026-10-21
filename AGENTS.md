@@ -106,8 +106,20 @@ paths automatically when the supporting caches are available.
 - Treat the `--username` value as an ordinary chat target even when it matches
   the current account username. Do not add a special self-chat guard or require
   an extra override flag for that case.
-- `wxview messages` returns records sorted by time ascending by default. Apply
-  `--limit` and `--offset` after merging all matching message shards.
+- `wxview messages` defaults to ascending time. Explicit `--order asc|desc`
+  opts into stable composite-key pagination with `--cursor` and positive limit.
+  Reject explicit offset/after-seq combinations. Preserve the legacy defaults
+  and next_after_seq for callers without order/cursor.
+- Stable message order is (create_time, seq, local_id, source_db), all ascending
+  or all descending. Share this key across index/scan and cursor comparisons.
+  Push candidate limits into SQL, bound merging, and normalize only the final
+  page. Do not claim LIMIT prevents SQLite scans without checking query plans.
+- Message cursors bind account/data-directory identity, username, direction and
+  normalized range. Freeze omitted end on the first page; continuation args/URLs
+  carry fixed Unix seconds. No snapshot guarantee across cache refreshes.
+  Ordinary stable-pagination reads must not initialize missing caches.
+- Resolve account once per message query and reuse it for cache paths, metadata,
+  media and index freshness. HTTP envelope identity must use this same account.
 - V1 maintains a derived local message index when available. `messages` may use
   it as a fast path when the index is ready, covers the chat, and is either
   globally near-real-time or chat-level fresh according to `session/session.db`.
@@ -278,9 +290,13 @@ product goal.
   `~/.wxview/cache/<account>/mtime.json`. It records source DB path, size,
   mtime, salt, cache path, and refresh time. Refresh should skip decrypting a
   DB when metadata still matches and the cache file exists.
-- Daemon watchers should resolve the current account dynamically, so logging out
-  of one WeChat account and logging into another while the daemon is running
-  switches to the new account's key/cache metadata.
+- Daemon watchers share an account/path snapshot: account probes every 20s,
+  shard discovery every 5s and known-file stats every 1s. Coalesce concurrent
+  expiry and failed probes. macOS requires positive open-file account evidence;
+  failed probes must not switch accounts via mtime fallback.
+- Serialize daemon cache refresh writes, including index preparation. Long
+  watcher callbacks coalesce new triggers into at most one pending callback.
+  Account switch detection is bounded by probe latency, not one second.
 - Supported message-related DBs include numeric正文分片
   `message/message_[number].db` plus `message/biz_message_[number].db`,
   `message/media_[number].db`, `message/message_fts.db`,
