@@ -1,7 +1,7 @@
 # macOS 临时副本取钥
 
 v0.4.0 新增此入口。已验证环境：原生 Apple Silicon、macOS、微信 4.1.13。
-当前源码增加实验性 Intel x86_64 支持，需从源码构建；v0.4.0 发布包不包含此适配。
+v0.4.2 起发布包含实验性 Intel x86_64 包（`darwin_amd64`），无需从源码构建。
 Intel 已验证环境：macOS 26.5.1、Intel Core i9、微信 4.1.15。Rosetta 未验证，Windows 不支持此入口。
 
 ## 第一次初始化

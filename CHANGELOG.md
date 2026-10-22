@@ -2,10 +2,37 @@
 
 All notable changes to Wxview are documented here.
 
+## 0.4.2 - 2026-10-23
+
+### Added
+
+- Experimental Intel x86_64 macOS package
+  (`wxview_0.4.2_darwin_amd64.tar.gz`). The Intel key-capture code shipped in
+  the 0.4.1 source, but no prebuilt package existed; Intel users previously
+  had to build from source. The Intel code path was verified on real hardware
+  (Intel Core i9, WeChat 4.1.15) on 2026-10-19; the packaged binary was not
+  re-accepted on real Intel hardware.
+
+### Fixed
+
+- Release packages now ship the current macOS key-capture guide. The 0.4.1
+  packages included a stale guide that told Intel Mac users to keep using the
+  scan path, although experimental Intel LLDB key capture shipped in 0.4.1.
+
+### Documentation
+
+- CHANGELOG now records the experimental Intel macOS key capture under 0.4.1;
+  README and the setup guide describe the Intel package.
+
+No Go code changes in this release besides the version string.
+
 ## 0.4.1 - 2026-10-21
 
 ### Added
 
+- Experimental Intel x86_64 macOS LLDB key capture, verified on
+  WeChat 4.1.15 (Intel Core i9). Rosetta is unverified; the Windows package
+  keeps the scan path.
 - Stable message pagination for CLI and WebAPI: explicit `--order asc|desc`
   with `--cursor` continuation over the full sort key
   `(create_time, seq, local_id, source_db)`, interchangeable between the

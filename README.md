@@ -2,7 +2,7 @@
 
 本地微信数据查询 CLI，面向 AI Agent、脚本和个人数据管理。
 
-当前版本：[v0.4.1](https://github.com/ai-daming/wxview/releases/tag/v0.4.1)。daemon 后台探测降频与缓存刷新串行化，`messages` 新增稳定分页；v0.4.0 引入的 macOS Apple Silicon 临时副本取钥已在微信 **4.1.13** 上完成实机验收。
+当前版本：[v0.4.2](https://github.com/ai-daming/wxview/releases/tag/v0.4.2)。本版新增实验性 Intel macOS 发布包并修正取钥文档；v0.4.1 起 daemon 后台探测降频、`messages` 支持稳定分页。Apple Silicon 取钥已在微信 **4.1.13** 实机验收，Intel 取钥已在微信 **4.1.15** 验证。
 
 联系人 · 会话 · 聊天记录 · 搜索 · 时间线 · 媒体 · 收藏 · 公众号 · 朋友圈
 
@@ -29,7 +29,7 @@ Wxview 的重点是清楚的本地缓存边界和稳定的机器输出：`init` 
 
 当前支持：
 
-- macOS 微信 4.x 数据读取；v0.4.0 新取钥方式实测为 Apple Silicon / 微信 4.1.13，当前源码另提供实验性 Intel 支持，已在 Intel / 微信 4.1.15 验证取钥和基本查询。
+- macOS 微信 4.x 数据读取；v0.4.0 新取钥方式实测为 Apple Silicon / 微信 4.1.13，v0.4.2 起提供实验性 Intel 取钥发布包，已在 Intel / 微信 4.1.15 验证取钥和基本查询。
 - Windows 微信 4.x 既有扫描/读取能力（`xwechat_files\<account>\db_storage` 数据布局）；本次不承诺 Windows 新版取钥支持。
 - `contact/contact.db`、`session/session.db`、`message/message_*.db`
 - 可选数据面：`message/biz_message_*.db`、`message/media_*.db`、`message/message_resource.db`、`message/message_revoke.db`、`head_image/head_image.db`、`favorite/favorite.db`、`sns/sns.db`
@@ -46,14 +46,15 @@ Wxview 的重点是清楚的本地缓存边界和稳定的机器输出：`init` 
 
 ### 1. 下载或构建
 
-无需 Go 开发环境可直接下载 [v0.4.1 发布包](https://github.com/ai-daming/wxview/releases/tag/v0.4.1)：
+无需 Go 开发环境可直接下载 [v0.4.2 发布包](https://github.com/ai-daming/wxview/releases/tag/v0.4.2)：
 
 | 平台 | 下载 | 取钥方式 |
 | --- | --- | --- |
-| macOS Apple Silicon | [ARM64 tar.gz](https://github.com/ai-daming/wxview/releases/download/v0.4.1/wxview_0.4.1_darwin_arm64.tar.gz) | 旧 scan 或新 `--key-source lldb` |
-| Windows x64 | [AMD64 zip](https://github.com/ai-daming/wxview/releases/download/v0.4.1/wxview_0.4.1_windows_amd64.zip) | 旧 scan；不支持 LLDB |
+| macOS Apple Silicon | [ARM64 tar.gz](https://github.com/ai-daming/wxview/releases/download/v0.4.2/wxview_0.4.2_darwin_arm64.tar.gz) | 旧 scan 或新 `--key-source lldb` |
+| macOS Intel（实验性） | [AMD64 tar.gz](https://github.com/ai-daming/wxview/releases/download/v0.4.2/wxview_0.4.2_darwin_amd64.tar.gz) | `--key-source lldb`（scan 在部分 Intel 机器上报 `task_for_pid=5`） |
+| Windows x64 | [AMD64 zip](https://github.com/ai-daming/wxview/releases/download/v0.4.2/wxview_0.4.2_windows_amd64.zip) | 旧 scan；不支持 LLDB |
 
-[SHA256SUMS](https://github.com/ai-daming/wxview/releases/download/v0.4.1/SHA256SUMS) 可用于核对下载文件。解压后进入对应目录，运行 `./wxview version`（Windows：`.\wxview.exe version`），应输出 `0.4.1`。
+[SHA256SUMS](https://github.com/ai-daming/wxview/releases/download/v0.4.2/SHA256SUMS) 可用于核对下载文件。解压后进入对应目录，运行 `./wxview version`（Windows：`.\wxview.exe version`），应输出 `0.4.2`。
 下载包直接使用 `./wxview` / `.\wxview.exe`；下面源码构建示例中的 `./bin/wxview` / `.\bin\wxview.exe` 请替换为解压后的路径。
 
 已有有效密钥和缓存可直接继续查询，不必因为升级再次取钥。首次使用新版 macOS 取钥请先阅读 [初始化与恢复指南](docs/lldb-setup.md)；可能需要重新扫码登录。
