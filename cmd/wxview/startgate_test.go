@@ -41,7 +41,9 @@ func stubConfirm(err error) (restore func()) {
 }
 
 func TestDaemonStartDeniedByGate(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	restore := stubConfirm(fmt.Errorf("stubbed denial"))
 	defer restore()
 	var out bytes.Buffer
@@ -60,6 +62,7 @@ func TestDaemonStartDeniedByGate(t *testing.T) {
 func TestAPIStartDeniedByGate(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	restore := stubConfirm(fmt.Errorf("stubbed denial"))
 	defer restore()
 	var out bytes.Buffer
@@ -76,7 +79,9 @@ func TestAPIStartDeniedByGate(t *testing.T) {
 }
 
 func TestDaemonForegroundWithoutTokenRejected(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	t.Setenv(daemonForegroundEnv, "1")
 	t.Setenv(daemonSpawnTokenEnv, "")
 	var out bytes.Buffer
@@ -92,6 +97,7 @@ func TestDaemonForegroundWithoutTokenRejected(t *testing.T) {
 func TestSpawnTokenRoundTrip(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	token, err := issueSpawnToken()
 	if err != nil {
 		t.Fatal(err)
@@ -125,6 +131,7 @@ func TestSpawnTokenRoundTrip(t *testing.T) {
 func TestSpawnTokenRejectsForgersAndReplays(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	token, err := issueSpawnToken()
 	if err != nil {
 		t.Fatal(err)
