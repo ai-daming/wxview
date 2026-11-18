@@ -2,6 +2,36 @@
 
 All notable changes to Wxview are documented here.
 
+## 0.5.0 - 2026-11-18
+
+### Added
+
+- Interactive confirmation gate for background starts: `wxview daemon start`
+  and `wxview api start` now prompt `y/N` on a real terminal before spawning
+  their background process. Only an explicit `y`/`yes` proceeds; empty input,
+  `n`, garbage, or EOF denies. There is no bypass flag, environment variable,
+  or config switch, so automation and AI agents cannot approve the start
+  themselves.
+
+### Changed
+
+- Non-interactive callers of `daemon start` / `api start` (pipes, scripts,
+  agent tooling) are rejected with a non-zero exit and a one-line reason
+  instead of silently starting a background process. Already-running checks
+  still return their previous messages before any prompt.
+- The internal foreground daemon path (`WXVIEW_DAEMON_FOREGROUND=1 wxview
+  daemon`) now requires a one-time spawn token file
+  (`~/.wxview/daemon-spawn-token`, 0600) issued by `daemon start` after
+  confirmation; the token is burned on first use, so the path can no longer
+  be entered by setting the env var directly.
+- `wxview api serve` keeps its documented foreground/debug form and does not
+  require confirmation.
+
+### Security
+
+- Prevents surprise persistent background processes from agent-driven or
+  scripted CLI usage without user consent.
+
 ## 0.4.2 - 2026-10-23
 
 ### Added
