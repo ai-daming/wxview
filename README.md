@@ -143,6 +143,10 @@ Windows 需要在管理员终端运行：
 2. 监听联系人、会话、消息、媒体、头像、收藏和 SNS 数据库变化。
 3. 后台维护 `~/.wxview/cache/<account>/index/messages.db` 消息索引。
 
+`daemon start` 需要在终端交互确认（`y/N`，默认拒绝）才会真正启动后台进程；
+非交互调用（脚本、AI agent、管道输入）会被直接拒绝。没有 `--yes` 之类的旁路
+参数。
+
 六组 watcher 共享账号/数据库路径快照：账号探测间隔 20 秒，消息分片目录检查间隔
 5 秒，已知文件仍每秒检查。账号切换及新增分片不是一秒内保证；刷新还需等待防抖和实际处理。
 macOS 活跃账号探测失败时暂停本轮刷新，20 秒后重试，不回退到其他账号的 mtime。
@@ -188,6 +192,9 @@ curl http://127.0.0.1:38765/v1/me
 curl 'http://127.0.0.1:38765/v1/contacts?kind=chatroom&limit=5'
 ./bin/wxview api stop
 ```
+
+`api start` 与 `daemon start` 一样需要终端交互确认；`api serve` 保持前台调试形态，
+不需要确认。
 
 读取某个会话的聊天记录：
 

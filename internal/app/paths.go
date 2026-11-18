@@ -9,10 +9,11 @@ import (
 )
 
 const (
-	Name        = "wxview"
-	ConfigDir   = ".wxview"
-	SocketName  = "wxview.sock"
-	LogFileName = "wxview.log"
+	Name                     = "wxview"
+	ConfigDir                = ".wxview"
+	SocketName               = "wxview.sock"
+	LogFileName              = "wxview.log"
+	DaemonSpawnTokenFileName = "daemon-spawn-token"
 )
 
 func HomeDir() (string, error) {
@@ -63,6 +64,14 @@ func LogPath() (string, error) {
 		return "", err
 	}
 	return filepath.Join(base, LogFileName), nil
+}
+
+func DaemonSpawnTokenPath() (string, error) {
+	base, err := EnsureBaseDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(base, DaemonSpawnTokenFileName), nil
 }
 
 func CacheDBPath(account string, relPath string) (string, error) {

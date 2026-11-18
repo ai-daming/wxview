@@ -418,6 +418,9 @@ Notes:
   reachable network clients.
   V1 supports one API instance. If an API instance started by start or serve is
   already running, start returns an error instead of starting a second process.
+  start requires interactive terminal confirmation (y/N) before it spawns the
+  background process; non-interactive callers are rejected. There is no
+  bypass flag.
   Runtime files are:
     ~/.wxview/api.json
     ~/.wxview/api.log`)
@@ -509,6 +512,7 @@ Response notes:
 
 const (
 	daemonForegroundEnv   = "WXVIEW_DAEMON_FOREGROUND"
+	daemonSpawnTokenEnv   = "WXVIEW_DAEMON_SPAWN_TOKEN"
 	apiManagedChildEnv    = "WXVIEW_API_MANAGED_CHILD"
 	daemonSupportedForms  = "`wxview daemon`, `wxview daemon start`, `wxview daemon stop`, `wxview daemon status`"
 	daemonStartWait       = 15 * time.Second
@@ -567,6 +571,10 @@ Internal daemon actions:
 Notes:
   This is an internal local transport, not the WebAPI. Use wxview api start or
   wxview api serve for the separate local HTTP data endpoint.
+  daemon start requires interactive terminal confirmation (y/N) before it
+  spawns the background process; non-interactive callers are rejected. There
+  is no bypass flag. The foreground daemon path (WXVIEW_DAEMON_FOREGROUND) is
+  internal and needs a one-time spawn token issued by daemon start.
   daemon start writes daemon logs to ~/.wxview/wxview.log.
   V1 does not patch or stream .db-wal, so refresh is near-real-time after WeChat
   checkpoints/writes the main DB.`)
@@ -1271,6 +1279,9 @@ func runAPIStart(ctx context.Context, args []string, stdout io.Writer) error {
 	if err := ensureNoAPIAlreadyRunning(ctx, *addr); err != nil {
 		return err
 	}
+	if err := confirmStartAction(fmt.Sprintf("Start wxview WebAPI at http://%s in the background", *addr)); err != nil {
+		return err
+	}
 
 	logPath, err := apiLogPath()
 	if err != nil {
@@ -1755,6 +1766,9 @@ func runDaemon(args []string, stdout io.Writer) error {
 }
 
 func runDaemonForeground(stdout io.Writer) error {
+	if err := consumeSpawnToken(os.Getenv(daemonSpawnTokenEnv)); err != nil {
+		return fmt.Errorf("daemon foreground requires a spawn token issued by `wxview daemon start`: %v", err)
+	}
 	socketPath, err := app.SocketPath()
 	if err != nil {
 		return err
@@ -1791,6 +1805,14 @@ func runDaemonStart(args []string, stdout io.Writer) error {
 		return nil
 	}
 
+	if err := confirmStartAction("Start wxview cache daemon in the background"); err != nil {
+		return err
+	}
+	spawnToken, err := issueSpawnToken()
+	if err != nil {
+		return err
+	}
+
 	logPath, err := app.LogPath()
 	if err != nil {
 		return err
@@ -1809,7 +1831,7 @@ func runDaemonStart(args []string, stdout io.Writer) error {
 		return err
 	}
 	cmd := exec.Command(exe, "daemon")
-	cmd.Env = append(os.Environ(), daemonForegroundEnv+"=1")
+	cmd.Env = append(os.Environ(), daemonForegroundEnv+"=1", daemonSpawnTokenEnv+"="+spawnToken)
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	cmd.SysProcAttr = daemonSysProcAttr()

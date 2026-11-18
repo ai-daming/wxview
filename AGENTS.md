@@ -21,6 +21,12 @@ paths automatically when the supporting caches are available.
 - `wechat-decrypt/` is an external reference repo and is ignored by the root git
   repo. Read it for behavior, but do not mix it into the Go runtime path.
 - Runtime state under `~/.wxview/` is local user data and must not be committed.
+- Do not run `wxview daemon start` or `wxview api start`, and do not spawn
+  wxview background processes via shell tricks (`nohup ... &`, hidden internal
+  env vars), unless the user explicitly asks for it in the current
+  conversation. These commands require interactive terminal confirmation by
+  design; when they fail non-interactively, report that to the user instead
+  of working around it. There is no bypass flag.
 
 ## Command Semantics
 
@@ -62,7 +68,9 @@ paths automatically when the supporting caches are available.
   WebAPI to reachable network clients. V1 manages only one API instance:
   `wxview api status` and `wxview api stop` take no `--addr`. `wxview api serve`
   is retained as the foreground/debug form. This is not an authenticated API in
-  V1.
+  V1. `wxview api start` requires interactive terminal confirmation (y/N)
+  before spawning the background process and rejects non-interactive callers;
+  there is no bypass flag.
 - WebAPI business responses should include lightweight account/server identity
   metadata so callers can distinguish multiple local instances. Business query
   endpoints return a `{meta, items}` envelope; message-like endpoints reuse the
@@ -239,6 +247,11 @@ product goal.
 - The only supported daemon CLI forms are `wxview daemon`, `wxview daemon start`,
   `wxview daemon stop`, and `wxview daemon status`. Bare `wxview daemon` must
   show the same help as `wxview daemon --help` and must not start the daemon.
+  `wxview daemon start` requires interactive terminal confirmation (y/N)
+  before spawning the background process and rejects non-interactive callers;
+  there is no bypass flag. The foreground daemon path
+  (`WXVIEW_DAEMON_FOREGROUND`) is internal and requires a one-time spawn
+  token issued by `daemon start`.
 - `wxview contacts ...` should always read contacts directly from the local
   decrypted cache, then apply filtering, sorting, pagination, counts, and output
   formatting in the CLI path.
