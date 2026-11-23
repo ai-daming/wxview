@@ -92,11 +92,12 @@ func (s *Server) watchPaths(relative string) []string {
 		return nil
 	}
 	if relative != "messages" {
-		return []string{key.TargetFor(account, relative).DBPath}
+		path := key.TargetFor(account, relative).DBPath
+		return []string{path, path + "-wal", path + "-journal"}
 	}
 	paths := make([]string, 0, len(targets))
 	for _, target := range targets {
-		paths = append(paths, target.DBPath)
+		paths = append(paths, target.DBPath, target.DBPath+"-wal", target.DBPath+"-journal")
 	}
 	return paths
 }

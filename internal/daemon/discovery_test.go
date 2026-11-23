@@ -133,3 +133,37 @@ func TestDiscoveryStatisticsDoNotWaitForProbe(t *testing.T) {
 	close(release)
 	<-done
 }
+
+func TestWatchPathsDetectWALOnlyChangesWithoutNewDiscovery(t *testing.T) {
+	root := t.TempDir()
+	account := key.TargetDB{Account: "synthetic", DataDir: root}
+	if err := os.MkdirAll(filepath.Join(root, "message"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(root, "message", "message_0.db")
+	if err := os.WriteFile(source, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	s := Server{}
+	s.discovery.discover = func() (key.TargetDB, error) { return account, nil }
+	for _, kind := range []string{"messages", "contact/contact.db", "session/session.db", "favorite/favorite.db", "sns/sns.db"} {
+		paths := s.watchPaths(kind)
+		before := statFileSet(paths)
+		main := source
+		if kind != "messages" {
+			main = key.TargetFor(account, kind).DBPath
+		}
+		if err := os.MkdirAll(filepath.Dir(main), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(main+"-wal", []byte("new WAL"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if after := statFileSet(s.watchPaths(kind)); after == before {
+			t.Fatal("WAL-only creation did not change watcher signature")
+		}
+	}
+	if got := s.discovery.statistics().AccountProbes; got != 1 {
+		t.Fatal("WAL watching introduced extra account probes")
+	}
+}

@@ -88,3 +88,57 @@ func TestCacheMetadataMissingCacheIsStale(t *testing.T) {
 		t.Fatal("expected missing cache to be stale")
 	}
 }
+
+func TestCacheFreshnessTracksWALOnlyChanges(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	source := filepath.Join(home, "source.db")
+	cache := filepath.Join(home, "cache.db")
+	if err := os.WriteFile(source, []byte("unchanged main"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cache, []byte("cache"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	target := TargetDB{Account: "synthetic", DataDir: home, DBRelPath: "message/message_0.db", DBPath: source}
+	save := func() {
+		sig, err := statSourceSignature(source)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = updateCacheMetadata(target, cache, "salt", sig); err != nil {
+			t.Fatal(err)
+		}
+	}
+	save()
+	if err := os.WriteFile(source+"-wal", make([]byte, 32), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if fresh, err := isCacheFresh(target, cache, "salt"); err != nil || fresh {
+		t.Fatal("WAL creation did not invalidate unchanged main cache")
+	}
+	save()
+	info, err := os.Stat(source + "-wal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	header := make([]byte, 32)
+	header[16] = 1
+	if err = os.WriteFile(source+"-wal", header, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.Chtimes(source+"-wal", info.ModTime(), info.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	if fresh, err := isCacheFresh(target, cache, "salt"); err != nil || fresh {
+		t.Fatal("equal-size WAL generation reset did not invalidate cache")
+	}
+	save()
+	if err = os.Remove(source + "-wal"); err != nil {
+		t.Fatal(err)
+	}
+	if fresh, err := isCacheFresh(target, cache, "salt"); err != nil || fresh {
+		t.Fatal("WAL removal did not invalidate cache")
+	}
+}

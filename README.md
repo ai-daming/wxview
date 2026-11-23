@@ -33,12 +33,13 @@ Wxview 的重点是清楚的本地缓存边界和稳定的机器输出：`init` 
 - Windows 微信 4.x 既有扫描/读取能力（`xwechat_files\<account>\db_storage` 数据布局）。源码新增实验性 [Config.Cipher 取钥路径](docs/windows-key-scan.md)，尚待 Windows 实机验收，不代表已发布 v0.4.2 包或微信 4.2 已兼容。
 - `contact/contact.db`、`session/session.db`、`message/message_*.db`
 - 可选数据面：`message/biz_message_*.db`、`message/media_*.db`、`message/message_resource.db`、`message/message_revoke.db`、`head_image/head_image.db`、`favorite/favorite.db`、`sns/sns.db`
+- 源码新增[含已提交 WAL 的只读缓存快照](docs/wal-snapshots.md)，不必等待微信将事务 checkpoint 到主库；这不代表已发布 v0.4.2 包具备此功能。
 
 当前不支持：
 
 - Linux
 - macOS 微信 3.x
-- WAL patch
+- 修改源微信数据库、WAL 或强制 checkpoint
 - WebAPI 身份认证及微信业务写入（如发送消息）；显式设置 `--addr` 可开放局域网读取
 - 语音转文字
 
@@ -496,13 +497,14 @@ daemon 是内部缓存维护服务，不是 WebAPI。WebAPI 由 `wxview api star
 - `wxview api status` 和 `wxview api stop` 不接收 `--addr`；V1 只管理一个 API 实例。
 - `wxview api serve --addr 127.0.0.1:38765` 以前台方式运行同一个 HTTP 服务，适合调试；它也参与单实例保护。
 - 已有 WebAPI 实例运行时，再执行 `wxview api start` 或 `wxview api serve --addr 其他端口` 会报错。
-- V1 不 patch WAL；刷新在微信写回或 checkpoint 到主 DB 后接近实时。
+- 源码的缓存刷新会读取主库和已提交 WAL；只写 Wxview 缓存，不修改微信文件。采集不稳定或校验失败时保留旧缓存，详见 [WAL 快照](docs/wal-snapshots.md)。
 
 消息索引用来加速 `messages` 和 `timeline`：
 
 - `ready` 且准实时：优先走索引。
 - `missing`、`building`、`schema_mismatch`、过度 `stale`：自动回落到直接扫描解密缓存。
 - `--no-index` 可以强制走扫描路径，便于对照排查。
+- WAL 快照缓存更新后，旧索引先回落到扫描；索引追上该缓存版本后恢复加速。
 - `index rebuild --reset` 会删除并重建派生索引，不影响源微信库和解密缓存。
 
 ## 权限和安全

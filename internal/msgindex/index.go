@@ -16,6 +16,7 @@ import (
 
 	"wxview/internal/app"
 	"wxview/internal/contacts"
+	"wxview/internal/key"
 	"wxview/internal/messages"
 	"wxview/internal/sessions"
 	"wxview/internal/sqlitedb"
@@ -457,11 +458,14 @@ func StatusFor(ctx context.Context, indexPath string, messageCachePaths []string
 	}
 	currentSeen := make(map[string]bool, len(current))
 	changed := false
+	snapshotChanged := false
+	snapshotCaches := key.SnapshotCaches(messageCachePaths)
 	var newestChange time.Time
 	for _, stat := range current {
 		row, ok := sourceByName[stat.SourceDB]
 		if !ok {
 			changed = true
+			snapshotChanged = snapshotChanged || snapshotCaches[stat.Path]
 			if t := time.Unix(0, stat.MTimeNS); t.After(newestChange) {
 				newestChange = t
 			}
@@ -476,6 +480,7 @@ func StatusFor(ctx context.Context, indexPath string, messageCachePaths []string
 		}
 		if row.CacheSize != stat.Size || row.CacheMTimeNS != stat.MTimeNS {
 			changed = true
+			snapshotChanged = snapshotChanged || snapshotCaches[stat.Path]
 			if t := time.Unix(0, stat.MTimeNS); t.After(newestChange) {
 				newestChange = t
 			}
@@ -490,6 +495,12 @@ func StatusFor(ctx context.Context, indexPath string, messageCachePaths []string
 		}
 	}
 	if changed {
+		if snapshotChanged {
+			status.Status = StatusStale
+			status.QueryMode = QueryModeScan
+			status.Reason = "snapshot_cache_changed"
+			return status, nil
+		}
 		status.LagSeconds = secondsSince(newestChange)
 		if status.LagSeconds > int64(realtimeLagWindow.Seconds()) {
 			status.Status = StatusStale
