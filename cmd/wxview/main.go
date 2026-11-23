@@ -277,6 +277,8 @@ Usage:
 Key sources:
   scan (default) Reuse valid saved keys, then scan running WeChat for missing keys.
                  macOS scanning may need sudo; Windows needs an Administrator terminal.
+                 Windows includes experimental Config.Cipher and legacy scanning;
+                 one init shares a 90s acquisition deadline and 6 GiB read budget.
   lldb           macOS Apple Silicon or experimental Intel; run WITHOUT sudo.
                  Requires Apple Command Line Tools (xcode-select --install).
                  Quit WeChat normally first. Wxview copies and signs a temporary

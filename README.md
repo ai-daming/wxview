@@ -30,7 +30,7 @@ Wxview 的重点是清楚的本地缓存边界和稳定的机器输出：`init` 
 当前支持：
 
 - macOS 微信 4.x 数据读取；v0.4.0 新取钥方式实测为 Apple Silicon / 微信 4.1.13，v0.4.2 起提供实验性 Intel 取钥发布包，已在 Intel / 微信 4.1.15 验证取钥和基本查询。
-- Windows 微信 4.x 既有扫描/读取能力（`xwechat_files\<account>\db_storage` 数据布局）；本次不承诺 Windows 新版取钥支持。
+- Windows 微信 4.x 既有扫描/读取能力（`xwechat_files\<account>\db_storage` 数据布局）。源码新增实验性 [Config.Cipher 取钥路径](docs/windows-key-scan.md)，尚待 Windows 实机验收，不代表已发布 v0.4.2 包或微信 4.2 已兼容。
 - `contact/contact.db`、`session/session.db`、`message/message_*.db`
 - 可选数据面：`message/biz_message_*.db`、`message/media_*.db`、`message/message_resource.db`、`message/message_revoke.db`、`head_image/head_image.db`、`favorite/favorite.db`、`sns/sns.db`
 
