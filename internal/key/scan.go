@@ -2,6 +2,7 @@ package key
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -13,6 +14,11 @@ func ScanContactKey(ctx context.Context, saltHex string, page1 []byte) (string, 
 }
 
 func ScanDBKey(ctx context.Context, saltHex string, page1 []byte, label string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	ctx, cancel := beginKeyScan(ctx)
+	defer cancel()
 	pids, err := wechatPIDs(ctx)
 	if err != nil {
 		return "", err
@@ -22,8 +28,14 @@ func ScanDBKey(ctx context.Context, saltHex string, page1 []byte, label string) 
 	}
 	var lastErr error
 	for _, pid := range pids {
-		keyHex, err := scanSQLCipherPragmaKey(pid, strings.ToLower(saltHex), page1)
+		keyHex, err := scanSQLCipherPragmaKey(ctx, pid, strings.ToLower(saltHex), page1)
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
 		if err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return "", err
+			}
 			lastErr = err
 			continue
 		}

@@ -125,11 +125,12 @@ static int wxview_scan_sqlcipher_key_for_salt(pid_t pid, const char *target_salt
 import "C"
 
 import (
+	"context"
 	"fmt"
 	"unsafe"
 )
 
-func scanSQLCipherPragmaKey(pid int, saltHex string, _ []byte) (string, error) {
+func scanSQLCipherPragmaKey(_ context.Context, pid int, saltHex string, _ []byte) (string, error) {
 	cSalt := C.CString(saltHex)
 	defer C.free(unsafe.Pointer(cSalt))
 

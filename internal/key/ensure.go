@@ -50,6 +50,8 @@ func EnsureContactKey(ctx context.Context) (EnsureResult, error) {
 }
 
 func EnsureSupportedKeys(ctx context.Context) (EnsureKeysResult, error) {
+	ctx, cancel := beginKeyScan(ctx)
+	defer cancel()
 	requiredTargets, err := DiscoverRequiredDBs()
 	if err != nil {
 		return EnsureKeysResult{}, err
@@ -71,6 +73,9 @@ func EnsureSupportedKeys(ctx context.Context) (EnsureKeysResult, error) {
 	for _, target := range auxTargets {
 		res, err := EnsureDBKey(ctx, target)
 		if err != nil {
+			if ctx.Err() != nil {
+				return EnsureKeysResult{Keys: results, Warnings: warnings}, ctx.Err()
+			}
 			warnings = append(warnings, EnsureWarning{
 				DBRelPath: target.DBRelPath,
 				Message:   "auxiliary key missing; skipped. Retry later with `wxview init` and process-memory permissions.",
@@ -82,6 +87,9 @@ func EnsureSupportedKeys(ctx context.Context) (EnsureKeysResult, error) {
 	for _, target := range DiscoverOptionalDataDBs() {
 		res, err := EnsureDBKey(ctx, target)
 		if err != nil {
+			if ctx.Err() != nil {
+				return EnsureKeysResult{Keys: results, Warnings: warnings}, ctx.Err()
+			}
 			warnings = append(warnings, EnsureWarning{
 				DBRelPath: target.DBRelPath,
 				Message:   "optional data key missing; skipped. Retry later with `wxview init` and process-memory permissions.",
@@ -122,6 +130,13 @@ func DiscoverOptionalDataDBs() []TargetDB {
 }
 
 func EnsureDBKey(ctx context.Context, target TargetDB) (EnsureResult, error) {
+	return ensureDBKey(ctx, target, ScanDBKey)
+}
+
+func ensureDBKey(ctx context.Context, target TargetDB, scan func(context.Context, string, []byte, string) (string, error)) (EnsureResult, error) {
+	if err := ctx.Err(); err != nil {
+		return EnsureResult{}, err
+	}
 	page1, saltBytes, err := decrypt.ReadPage1(target.DBPath)
 	if err != nil {
 		return EnsureResult{}, fmt.Errorf("read %s: %w", target.DBPath, err)
@@ -146,8 +161,11 @@ func EnsureDBKey(ctx context.Context, target TargetDB) (EnsureResult, error) {
 		}
 	}
 
-	keyHex, err := ScanDBKey(ctx, salt, page1, target.DBRelPath)
+	keyHex, err := scan(ctx, salt, page1, target.DBRelPath)
 	if err != nil {
+		return EnsureResult{}, err
+	}
+	if err := ctx.Err(); err != nil {
 		return EnsureResult{}, err
 	}
 	if !decrypt.ValidateRawHexKey(page1, keyHex) {
