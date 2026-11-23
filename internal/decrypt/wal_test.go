@@ -8,7 +8,9 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
+	"time"
 	"wxview/internal/decrypt/decrypttest"
 )
 
@@ -18,8 +20,13 @@ type testWALFrame struct {
 }
 
 func TestSnapshotChangesAndCancellationPreserveCache(t *testing.T) {
-	for _, mode := range []string{"main removed", "wal removed", "wal appended", "canceled"} {
+	for _, mode := range []string{"main removed", "wal removed", "main mtime changed", "wal mtime changed", "wal appended", "canceled"} {
 		t.Run(mode, func(t *testing.T) {
+			// Windows does not permit unlinking files held by an open snapshot.
+			// Keep mtime changes, WAL appends and cancellation covered on every OS.
+			if runtime.GOOS == "windows" && (mode == "main removed" || mode == "wal removed") {
+				t.Skip("Windows prevents removing an open snapshot source")
+			}
 			f := decrypttest.Load(t)
 			dir := t.TempDir()
 			src, dst := filepath.Join(dir, "source.db"), filepath.Join(dir, "cache.db")
@@ -37,6 +44,17 @@ func TestSnapshotChangesAndCancellationPreserveCache(t *testing.T) {
 				err = os.Remove(src)
 			case "wal removed":
 				err = os.Remove(src + "-wal")
+			case "main mtime changed", "wal mtime changed":
+				path := src
+				if mode == "wal mtime changed" {
+					path += "-wal"
+				}
+				var info os.FileInfo
+				info, err = os.Stat(path)
+				if err == nil {
+					changed := info.ModTime().Add(time.Second)
+					err = os.Chtimes(path, changed, changed)
+				}
 			case "wal appended":
 				err = os.WriteFile(src+"-wal", f.WAL2, 0600)
 			case "canceled":
@@ -66,6 +84,11 @@ func TestSnapshotChangesAndCancellationPreserveCache(t *testing.T) {
 }
 
 func TestSnapshotSourceReplacementCannotPublishOldDescriptor(t *testing.T) {
+	// This specifically checks a path replacement while the old descriptor is
+	// still readable. Closing it first would remove the scenario under test.
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows prevents replacing an open snapshot source")
+	}
 	f := decrypttest.Load(t)
 	dir := t.TempDir()
 	src := filepath.Join(dir, "source.db")
