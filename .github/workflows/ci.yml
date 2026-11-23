@@ -11,7 +11,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-15, windows-latest]
+        # The arm64 hosted pool failed to acquire a runner after 15 minutes.
+        os: [macos-15-intel, windows-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
@@ -26,6 +27,13 @@ jobs:
         run: go vet ./...
       - name: Build
         run: go build ./cmd/wxview
+      - name: Build macOS arm64
+        if: runner.os == 'macOS'
+        env:
+          GOOS: darwin
+          GOARCH: arm64
+          CGO_ENABLED: '0'
+        run: go build -o "$RUNNER_TEMP/wxview-darwin-arm64" ./cmd/wxview
       - name: Python helper synthetic tests
         if: runner.os == 'macOS'
         run: python3 -B -m unittest discover -s internal/key/lldbhelper
