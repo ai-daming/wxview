@@ -238,8 +238,12 @@ product goal.
 
 ## Daemon and Cache
 
-- V1 does not patch WAL files. Refresh is near-real-time after WeChat writes or
-  checkpoints the main DB.
+- Cache refresh captures the main DB plus committed WAL transactions read-only;
+  never patch WeChat files or force a checkpoint. Validate WAL checksums,
+  generation and commit boundaries, then decrypt and validate a temporary cache.
+  Compare main/WAL signatures and file identity before publication; retry source
+  changes at most three times. Failure must preserve the previous cache.
+  Each DB is captured independently; there is no account-wide snapshot guarantee.
 - In V1, the daemon is a cache maintenance service, not a contacts query
   service. It should focus on cache refresh, source DB watching, `health`,
   `refresh_contacts`, `refresh_sessions`, `refresh_messages`,
@@ -301,12 +305,18 @@ product goal.
   `~/.wxview/keys.json`; keys are account-scoped.
 - Cache refresh metadata path is:
   `~/.wxview/cache/<account>/mtime.json`. It records source DB path, size,
-  mtime, salt, cache path, and refresh time. Refresh should skip decrypting a
-  DB when metadata still matches and the cache file exists.
+  mtime, salt, cache path, refresh time, snapshot version and WAL presence,
+  size, mtime and header fingerprint. Persist the signature actually captured,
+  not a later source observation. Old entries require one refresh. Skip
+  decrypting only when the complete signature matches and the cache exists.
+  A changed snapshot cache invalidates the old message index immediately;
+  resume index queries only after it catches up.
 - Daemon watchers share an account/path snapshot: account probes every 20s,
   shard discovery every 5s and known-file stats every 1s. Coalesce concurrent
   expiry and failed probes. macOS requires positive open-file account evidence;
   failed probes must not switch accounts via mtime fallback.
+- Watch DB, WAL and rollback-journal paths even before sidecar files exist;
+  WAL-only writes must trigger refresh without new account discovery.
 - Serialize daemon cache refresh writes, including index preparation. Long
   watcher callbacks coalesce new triggers into at most one pending callback.
   Account switch detection is bounded by probe latency, not one second.

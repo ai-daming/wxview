@@ -258,6 +258,15 @@ func cacheStatusForTarget(target TargetDB, store storeLoad, meta metaLoad) (Cach
 		reasons = append(reasons, "metadata_unreadable")
 	} else if entry, ok := meta.meta.Files[target.DBRelPath]; ok {
 		item.RefreshedAt = formatCacheStatusTime(entry.RefreshedAt)
+		signature, signatureErr := statSourceSignature(target.DBPath)
+		if signatureErr != nil {
+			reasons = append(reasons, "source_snapshot_unavailable")
+		} else if entry.SnapshotVersion != 1 {
+			reasons = append(reasons, "snapshot_metadata_missing")
+		} else if entry.sourceSignature() != signature {
+			reasons = append(reasons, "source_snapshot_changed")
+		}
+
 		if !samePath(entry.SourcePath, target.DBPath) {
 			reasons = append(reasons, "source_path_changed")
 		}

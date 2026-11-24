@@ -290,21 +290,11 @@ func ensureDecryptedCache(ctx context.Context, res EnsureResult, cachePath strin
 	if fresh {
 		return nil
 	}
-	before, err := statSourceSignature(res.Target.DBPath)
+	signature, err := decrypt.DecryptToCacheWithSignature(ctx, res.Target.DBPath, cachePath, res.Entry.Key)
 	if err != nil {
 		return err
 	}
-	if err := decrypt.DecryptToCache(ctx, res.Target.DBPath, cachePath, res.Entry.Key); err != nil {
-		return err
-	}
-	after, err := statSourceSignature(res.Target.DBPath)
-	if err != nil {
-		return err
-	}
-	if before != after {
-		return nil
-	}
-	return updateCacheMetadata(res.Target, cachePath, res.Entry.Salt, after)
+	return updateCacheMetadata(res.Target, cachePath, res.Entry.Salt, signature)
 }
 
 func EnsureMessageCaches(ctx context.Context) ([]string, error) {

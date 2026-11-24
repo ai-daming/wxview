@@ -74,35 +74,27 @@ func ReadPage1(path string) ([]byte, []byte, error) {
 }
 
 func DecryptFile(ctx context.Context, src string, dst string, hexKey string) error {
+	snapshot, err := openSourceSnapshot(ctx, src)
+	if err != nil {
+		return err
+	}
+	defer snapshot.close()
+	if err = snapshot.decrypt(ctx, dst, hexKey); err != nil {
+		if stableErr := snapshot.stable(); errors.Is(stableErr, ErrSourceChanged) {
+			return stableErr
+		}
+		return err
+	}
+	return snapshot.stable()
+}
+
+func (snapshot *sourceSnapshot) decrypt(ctx context.Context, dst, hexKey string) error {
 	key, err := hex.DecodeString(hexKey)
-	if err != nil {
-		return fmt.Errorf("decode key: %w", err)
+	if err != nil || len(key) != KeySize {
+		return fmt.Errorf("decode key: expected %d-byte hex key", KeySize)
 	}
-	if len(key) != KeySize {
-		return fmt.Errorf("decode key: expected %d bytes, got %d", KeySize, len(key))
-	}
-
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-
-	info, err := in.Stat()
-	if err != nil {
-		return err
-	}
-	if info.Size() < PageSize {
-		return fmt.Errorf("%w: file is smaller than one page", ErrInvalidDatabase)
-	}
-
-	pageCount := info.Size() / PageSize
-	if info.Size()%PageSize != 0 {
-		pageCount++
-	}
-
 	page1 := make([]byte, PageSize)
-	if _, err := io.ReadFull(in, page1); err != nil {
+	if err = snapshot.readPage(1, page1); err != nil {
 		return err
 	}
 	if bytes.Equal(page1[:len(sqliteHeader)], []byte(sqliteHeader)) {
@@ -111,12 +103,7 @@ func DecryptFile(ctx context.Context, src string, dst string, hexKey string) err
 	if !ValidateRawKey(page1, key) {
 		return ErrIncorrectKey
 	}
-
-	if _, err := in.Seek(0, io.SeekStart); err != nil {
-		return err
-	}
-
-	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
+	if err = os.MkdirAll(filepath.Dir(dst), 0700); err != nil {
 		return err
 	}
 	out, err := os.Create(dst)
@@ -124,72 +111,106 @@ func DecryptFile(ctx context.Context, src string, dst string, hexKey string) err
 		return err
 	}
 	defer out.Close()
-
 	macKey := deriveRawMACKey(key, page1[:SaltSize])
-	buf := make([]byte, PageSize)
-	for pageNum := int64(1); pageNum <= pageCount; pageNum++ {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-
-		n, err := io.ReadFull(in, buf)
-		if err != nil {
-			if (errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF)) && n > 0 {
-				clear(buf[n:])
-			} else {
-				return err
-			}
-		}
-
-		if isAllZero(buf) {
-			if _, err := out.Write(buf); err != nil {
-				return err
-			}
-			continue
-		}
-
-		plain, err := decryptPage(buf, int(pageNum), key, macKey)
-		if err != nil {
+	buffer := make([]byte, PageSize)
+	for page := int64(1); page <= snapshot.count; page++ {
+		if err = ctx.Err(); err != nil {
 			return err
 		}
-		if _, err := out.Write(plain); err != nil {
+		if err = snapshot.readPage(page, buffer); err != nil {
+			return err
+		}
+		plain := buffer
+		if !isAllZero(buffer) {
+			plain, err = decryptPage(buffer, int(page), key, macKey)
+			if err != nil {
+				return err
+			}
+		}
+		if _, err = out.Write(plain); err != nil {
 			return err
 		}
 	}
 	return out.Close()
 }
 
-// DecryptToCache writes a temporary decrypted database, validates it in-process,
-// then atomically replaces dst. A failed decrypt never overwrites the last cache.
+// DecryptToCache preserves the public refresh entrypoint. All callers use the
+// same stable main/WAL capture and atomic publication mechanism.
 func DecryptToCache(ctx context.Context, src string, dst string, hexKey string) error {
-	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
-		return err
+	_, err := DecryptToCacheWithSignature(ctx, src, dst, hexKey)
+	return err
+}
+
+// DecryptToCacheWithSignature returns the source version actually captured,
+// rather than a later restat that might describe data we never read.
+func DecryptToCacheWithSignature(ctx context.Context, src, dst, hexKey string) (SourceSignature, error) {
+	if err := os.MkdirAll(filepath.Dir(dst), 0700); err != nil {
+		return SourceSignature{}, err
 	}
+	return retrySnapshotCapture(ctx, func() (SourceSignature, error) { return decryptCacheAttempt(ctx, src, dst, hexKey) })
+}
+
+func retrySnapshotCapture(ctx context.Context, attempt func() (SourceSignature, error)) (SourceSignature, error) {
+	var last error
+	for tries := 0; tries < 3; tries++ {
+		if err := ctx.Err(); err != nil {
+			return SourceSignature{}, err
+		}
+		signature, err := attempt()
+		if err == nil {
+			return signature, nil
+		}
+		if !errors.Is(err, ErrSourceChanged) {
+			return SourceSignature{}, err
+		}
+		last = err
+	}
+	return SourceSignature{}, fmt.Errorf("capture remained unstable after 3 attempts: %w", last)
+}
+
+func decryptCacheAttempt(ctx context.Context, src, dst, hexKey string) (SourceSignature, error) {
+	snapshot, err := openSourceSnapshot(ctx, src)
+	if err != nil {
+		return SourceSignature{}, err
+	}
+	defer snapshot.close()
+	return snapshot.publish(ctx, dst, hexKey)
+}
+
+func (snapshot *sourceSnapshot) publish(ctx context.Context, dst, hexKey string) (SourceSignature, error) {
+	var err error
 	tmp, err := os.CreateTemp(filepath.Dir(dst), filepath.Base(dst)+".*.tmp")
 	if err != nil {
-		return err
+		return SourceSignature{}, err
 	}
-	tmpPath := tmp.Name()
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpPath)
-		return err
+	name := tmp.Name()
+	if err = tmp.Close(); err != nil {
+		_ = os.Remove(name)
+		return SourceSignature{}, err
 	}
-	defer func() {
-		_ = os.Remove(tmpPath)
-	}()
-
-	if err := DecryptFile(ctx, src, tmpPath, hexKey); err != nil {
-		return err
+	defer os.Remove(name)
+	if err = snapshot.decrypt(ctx, name, hexKey); err != nil {
+		if stableErr := snapshot.stable(); errors.Is(stableErr, ErrSourceChanged) {
+			err = stableErr
+		}
+		return SourceSignature{}, err
 	}
-	if err := ValidateSQLite(ctx, tmpPath); err != nil {
-		return fmt.Errorf("validate decrypted sqlite: %w", err)
+	if err = ValidateSQLite(ctx, name); err != nil {
+		return SourceSignature{}, fmt.Errorf("validate decrypted sqlite: %w", err)
 	}
-	if err := os.Chmod(tmpPath, 0o600); err != nil {
-		return err
+	if err = ctx.Err(); err != nil {
+		return SourceSignature{}, err
 	}
-	return os.Rename(tmpPath, dst)
+	if err = snapshot.stable(); err != nil {
+		return SourceSignature{}, err
+	}
+	if err = os.Chmod(name, 0600); err != nil {
+		return SourceSignature{}, err
+	}
+	if err = os.Rename(name, dst); err != nil {
+		return SourceSignature{}, err
+	}
+	return snapshot.state.signature, nil
 }
 
 func ValidateSQLite(ctx context.Context, dbPath string) error {

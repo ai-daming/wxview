@@ -9,14 +9,12 @@ import (
 	"time"
 
 	"wxview/internal/app"
+	"wxview/internal/decrypt"
 )
 
 const cacheMetaRelPath = "mtime.json"
 
-type sourceSignature struct {
-	Size    int64
-	MTimeNS int64
-}
+type sourceSignature = decrypt.SourceSignature
 
 type cacheMetadata struct {
 	Version int                           `json:"version"`
@@ -24,12 +22,17 @@ type cacheMetadata struct {
 }
 
 type cacheMetadataEntry struct {
-	SourcePath    string    `json:"source_path"`
-	SourceSize    int64     `json:"source_size"`
-	SourceMTimeNS int64     `json:"source_mtime_ns"`
-	SourceSalt    string    `json:"source_salt"`
-	CachePath     string    `json:"cache_path"`
-	RefreshedAt   time.Time `json:"refreshed_at"`
+	SnapshotVersion int       `json:"snapshot_version,omitempty"`
+	WALPresent      bool      `json:"wal_present,omitempty"`
+	WALSize         int64     `json:"wal_size,omitempty"`
+	WALMTimeNS      int64     `json:"wal_mtime_ns,omitempty"`
+	WALHeader       string    `json:"wal_header,omitempty"`
+	SourcePath      string    `json:"source_path"`
+	SourceSize      int64     `json:"source_size"`
+	SourceMTimeNS   int64     `json:"source_mtime_ns"`
+	SourceSalt      string    `json:"source_salt"`
+	CachePath       string    `json:"cache_path"`
+	RefreshedAt     time.Time `json:"refreshed_at"`
 }
 
 func CacheMetaPath(account string) (string, error) {
@@ -65,7 +68,7 @@ func isCacheFresh(target TargetDB, cachePath string, sourceSalt string) (bool, e
 	if !strings.EqualFold(entry.SourceSalt, sourceSalt) {
 		return false, nil
 	}
-	return entry.SourceSize == current.Size && entry.SourceMTimeNS == current.MTimeNS, nil
+	return entry.SnapshotVersion == 1 && entry.sourceSignature() == current, nil
 }
 
 func updateCacheMetadata(target TargetDB, cachePath string, sourceSalt string, sig sourceSignature) error {
@@ -82,6 +85,7 @@ func updateCacheMetadata(target TargetDB, cachePath string, sourceSalt string, s
 	}
 	meta.Version = 1
 	meta.Files[target.DBRelPath] = cacheMetadataEntry{
+		SnapshotVersion: 1, WALPresent: sig.WALPresent, WALSize: sig.WALSize, WALMTimeNS: sig.WALMTimeNS, WALHeader: sig.WALHeader,
 		SourcePath:    target.DBPath,
 		SourceSize:    sig.Size,
 		SourceMTimeNS: sig.MTimeNS,
@@ -92,15 +96,34 @@ func updateCacheMetadata(target TargetDB, cachePath string, sourceSalt string, s
 	return saveCacheMetadata(metaPath, meta)
 }
 
-func statSourceSignature(path string) (sourceSignature, error) {
-	info, err := os.Stat(path)
-	if err != nil {
-		return sourceSignature{}, err
+func statSourceSignature(path string) (sourceSignature, error) { return decrypt.StatSource(path) }
+
+func (entry cacheMetadataEntry) sourceSignature() sourceSignature {
+	return sourceSignature{Size: entry.SourceSize, MTimeNS: entry.SourceMTimeNS, WALPresent: entry.WALPresent, WALSize: entry.WALSize, WALMTimeNS: entry.WALMTimeNS, WALHeader: entry.WALHeader}
+}
+
+// SnapshotCaches recognizes the existing account metadata, without account
+// discovery or source access. Index readers use this to reject lagging snapshots.
+func SnapshotCaches(paths []string) map[string]bool {
+	result := make(map[string]bool)
+	loaded := make(map[string]cacheMetadata)
+	for _, path := range paths {
+		root := filepath.Dir(filepath.Dir(path))
+		meta, ok := loaded[root]
+		if !ok {
+			meta, _ = loadCacheMetadata(filepath.Join(root, cacheMetaRelPath))
+			loaded[root] = meta
+		}
+		relative, err := filepath.Rel(root, path)
+		if err != nil {
+			continue
+		}
+		entry, ok := meta.Files[filepath.ToSlash(relative)]
+		if ok && entry.SnapshotVersion == 1 && samePath(entry.CachePath, path) {
+			result[path] = true
+		}
 	}
-	return sourceSignature{
-		Size:    info.Size(),
-		MTimeNS: info.ModTime().UnixNano(),
-	}, nil
+	return result
 }
 
 func loadCacheMetadata(path string) (cacheMetadata, error) {
