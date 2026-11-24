@@ -2,7 +2,7 @@
 
 本地微信数据查询 CLI，面向 AI Agent、脚本和个人数据管理。
 
-当前版本：[v0.4.2](https://github.com/ai-daming/wxview/releases/tag/v0.4.2)。本版新增实验性 Intel macOS 发布包并修正取钥文档；v0.4.1 起 daemon 后台探测降频、`messages` 支持稳定分页。Apple Silicon 取钥已在微信 **4.1.13** 实机验收，Intel 取钥已在微信 **4.1.15** 验证。
+当前版本：[v0.6.0](https://github.com/ai-daming/wxview/releases/tag/v0.6.0)。本版增加已提交 WAL 的只读缓存快照、查询数据覆盖与新鲜度信息，以及实验性 Windows Config.Cipher 取钥；同时移除派生消息索引，修复旧索引导致的漏查。Apple Silicon 取钥与 WAL 新消息读取已在微信 **4.1.13** 实机验收；Intel 取钥已有微信 **4.1.15** 验证记录。Windows 新增能力尚待微信实机验收，不代表微信 4.2 已兼容。
 
 联系人 · 会话 · 聊天记录 · 搜索 · 时间线 · 媒体 · 收藏 · 公众号 · 朋友圈
 
@@ -18,7 +18,7 @@ Wxview 的重点是清楚的本地缓存边界和稳定的机器输出：`init` 
 - **本地优先**：数据库 key 和解密缓存保存在本机 `~/.wxview/`。
 - **常驻维护**：`wxview daemon start` 持续刷新解密缓存。
 - **AI 友好**：支持 `json`、`jsonl`、`csv` 和 `table` 输出；`messages` / `timeline` 的 JSON 输出带 `meta.next_args`，方便可靠分页。
-- **读取状态**：源码的消息 JSON 与 WebAPI 在 `meta.data_coverage` 中报告本次依赖缓存的新鲜度、成功采集时间和已知缺口，详见[查询覆盖说明](docs/query-coverage.md)。
+- **读取状态**：消息 JSON 与 WebAPI 在 `meta.data_coverage` 中报告本次依赖缓存的新鲜度、成功采集时间和已知缺口，详见[查询覆盖说明](docs/query-coverage.md)。
 - **身份清楚**：`wxview me` 和 WebAPI `GET /v1/me` 会返回当前账号身份，方便区分多个本地实例。
 - **跨会话读取**：既能按明确 `username` 查询单个聊天，也能按联系人筛选条件合并成全局时间线。
 - **本地 WebAPI**：`wxview api start` 提供 HTTP 数据接口，默认只监听本机；显式 `--addr` 可监听局域网地址。GET 查询只读，POST 用于本地 cache/new-messages action；`api serve` 用于前台调试。
@@ -29,10 +29,10 @@ Wxview 的重点是清楚的本地缓存边界和稳定的机器输出：`init` 
 当前支持：
 
 - macOS 微信 4.x 数据读取；v0.4.0 新取钥方式实测为 Apple Silicon / 微信 4.1.13，v0.4.2 起提供实验性 Intel 取钥发布包，已在 Intel / 微信 4.1.15 验证取钥和基本查询。
-- Windows 微信 4.x 既有扫描/读取能力（`xwechat_files\<account>\db_storage` 数据布局）。源码新增实验性 [Config.Cipher 取钥路径](docs/windows-key-scan.md)，尚待 Windows 实机验收，不代表已发布 v0.4.2 包或微信 4.2 已兼容。
+- Windows 微信 4.x 既有扫描/读取能力（`xwechat_files\<account>\db_storage` 数据布局）。v0.6.0 新增实验性 [Config.Cipher 取钥路径](docs/windows-key-scan.md)，尚待 Windows 微信实机验收，不代表微信 4.2 已兼容。
 - `contact/contact.db`、`session/session.db`、`message/message_*.db`
 - 可选数据面：`message/biz_message_*.db`、`message/media_*.db`、`message/message_resource.db`、`message/message_revoke.db`、`head_image/head_image.db`、`favorite/favorite.db`、`sns/sns.db`
-- 源码新增[含已提交 WAL 的只读缓存快照](docs/wal-snapshots.md)，不必等待微信将事务 checkpoint 到主库；这不代表已发布 v0.4.2 包具备此功能。
+- v0.6.0 起支持[含已提交 WAL 的只读缓存快照](docs/wal-snapshots.md)，不必等待微信将事务 checkpoint 到主库。
 
 当前不支持：
 
@@ -46,18 +46,18 @@ Wxview 的重点是清楚的本地缓存边界和稳定的机器输出：`init` 
 
 ### 1. 下载或构建
 
-无需 Go 开发环境可直接下载 [v0.4.2 发布包](https://github.com/ai-daming/wxview/releases/tag/v0.4.2)：
+无需 Go 开发环境可直接下载 [v0.6.0 发布包](https://github.com/ai-daming/wxview/releases/tag/v0.6.0)：
 
 | 平台 | 下载 | 取钥方式 |
 | --- | --- | --- |
-| macOS Apple Silicon | [ARM64 tar.gz](https://github.com/ai-daming/wxview/releases/download/v0.4.2/wxview_0.4.2_darwin_arm64.tar.gz) | 旧 scan 或新 `--key-source lldb` |
-| macOS Intel（实验性） | [AMD64 tar.gz](https://github.com/ai-daming/wxview/releases/download/v0.4.2/wxview_0.4.2_darwin_amd64.tar.gz) | `--key-source lldb`（scan 在部分 Intel 机器上报 `task_for_pid=5`） |
-| Windows x64 | [AMD64 zip](https://github.com/ai-daming/wxview/releases/download/v0.4.2/wxview_0.4.2_windows_amd64.zip) | 旧 scan；不支持 LLDB |
+| macOS Apple Silicon | [ARM64 tar.gz](https://github.com/ai-daming/wxview/releases/download/v0.6.0/wxview_0.6.0_darwin_arm64.tar.gz) | 旧 scan 或新 `--key-source lldb` |
+| macOS Intel（实验性） | [AMD64 tar.gz](https://github.com/ai-daming/wxview/releases/download/v0.6.0/wxview_0.6.0_darwin_amd64.tar.gz) | `--key-source lldb`（scan 在部分 Intel 机器上报 `task_for_pid=5`） |
+| Windows x64（新增取钥实验性） | [AMD64 zip](https://github.com/ai-daming/wxview/releases/download/v0.6.0/wxview_0.6.0_windows_amd64.zip) | 旧 scan + 实验性 Config.Cipher；不支持 LLDB |
 
-[SHA256SUMS](https://github.com/ai-daming/wxview/releases/download/v0.4.2/SHA256SUMS) 可用于核对下载文件。解压后进入对应目录，运行 `./wxview version`（Windows：`.\wxview.exe version`），应输出 `0.4.2`。
+[SHA256SUMS](https://github.com/ai-daming/wxview/releases/download/v0.6.0/SHA256SUMS) 可用于核对下载文件。解压后进入对应目录，运行 `./wxview version`（Windows：`.\wxview.exe version`），应输出 `0.6.0`。
 下载包直接使用 `./wxview` / `.\wxview.exe`；下面源码构建示例中的 `./bin/wxview` / `.\bin\wxview.exe` 请替换为解压后的路径。
 
-已有有效密钥和缓存可直接继续查询，不必因为升级再次取钥。首次使用新版 macOS 取钥请先阅读 [初始化与恢复指南](docs/lldb-setup.md)；可能需要重新扫码登录。
+已有有效密钥和缓存可直接继续查询，不必因为升级再次取钥。旧缓存缺少新版本绑定时，`data_coverage` 会先显示 `unknown`，正常刷新后补齐，见[升级说明](docs/releases/v0.6.0.md)。首次使用新版 macOS 取钥请先阅读 [初始化与恢复指南](docs/lldb-setup.md)；可能需要重新扫码登录。
 
 从源码构建（Go 1.25 或以上）：
 
@@ -487,7 +487,7 @@ daemon 是内部缓存维护服务，不是 WebAPI。WebAPI 由 `wxview api star
 - `wxview api status` 和 `wxview api stop` 不接收 `--addr`；V1 只管理一个 API 实例。
 - `wxview api serve --addr 127.0.0.1:38765` 以前台方式运行同一个 HTTP 服务，适合调试；它也参与单实例保护。
 - 已有 WebAPI 实例运行时，再执行 `wxview api start` 或 `wxview api serve --addr 其他端口` 会报错。
-- 源码的缓存刷新会读取主库和已提交 WAL；只写 Wxview 缓存，不修改微信文件。采集不稳定或校验失败时保留旧缓存，详见 [WAL 快照](docs/wal-snapshots.md)。
+- 缓存刷新会读取主库和已提交 WAL；只写 Wxview 缓存，不修改微信文件。采集不稳定或校验失败时保留旧缓存，详见 [WAL 快照](docs/wal-snapshots.md)。
 
 `messages`、`timeline` 和 `search` 直接读取解密消息分片。
 
