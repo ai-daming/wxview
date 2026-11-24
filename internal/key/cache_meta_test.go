@@ -38,7 +38,7 @@ func TestCacheMetadataFreshness(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := updateCacheMetadata(target, cachePath, "AABBCC", sig); err != nil {
+	if err := updateCacheMetadata(target, cachePath, "AABBCC", sig, testCacheRevision(t, cachePath)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -107,7 +107,7 @@ func TestCacheFreshnessTracksWALOnlyChanges(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err = updateCacheMetadata(target, cache, "salt", sig); err != nil {
+		if err = updateCacheMetadata(target, cache, "salt", sig, testCacheRevision(t, cache)); err != nil {
 			t.Fatal(err)
 		}
 	}

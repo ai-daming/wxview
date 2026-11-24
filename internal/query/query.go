@@ -70,6 +70,8 @@ type ContactsRequest struct {
 }
 
 type ContactsResult struct {
+	Coverage *DataCoverage
+
 	Target    key.TargetDB
 	CachePath string
 	Items     []contacts.Contact
@@ -84,6 +86,8 @@ type ContactDetailRequest struct {
 }
 
 type ContactDetailResult struct {
+	Coverage *DataCoverage
+
 	Target key.TargetDB
 	Item   contacts.Detail
 }
@@ -95,6 +99,8 @@ type MembersRequest struct {
 }
 
 type MembersResult struct {
+	Coverage *DataCoverage
+
 	Group contacts.GroupMembers
 }
 
@@ -108,6 +114,8 @@ type SessionsRequest struct {
 }
 
 type SessionsResult struct {
+	Coverage *DataCoverage
+
 	Items   []sessions.Session
 	Total   int
 	HasMore bool
@@ -131,6 +139,8 @@ type MessagesRequest struct {
 }
 
 type MessagesResult struct {
+	Coverage *DataCoverage
+
 	Order        string
 	NextCursor   string
 	Target       key.TargetDB
@@ -156,6 +166,8 @@ type SearchRequest struct {
 }
 
 type SearchResult struct {
+	Coverage *DataCoverage
+
 	Items        []messages.Message
 	Range        TimeRange
 	Execution    ExecutionMeta
@@ -180,6 +192,8 @@ type TimelineRequest struct {
 }
 
 type TimelineResult struct {
+	Coverage *DataCoverage
+
 	Items        []messages.Message
 	Range        TimelineRange
 	Execution    ExecutionMeta
@@ -197,6 +211,8 @@ type NewMessagesRequest struct {
 }
 
 type NewMessagesResult struct {
+	Coverage *DataCoverage
+
 	Target       key.TargetDB
 	Items        []messages.Message
 	FirstRun     bool
@@ -217,6 +233,8 @@ type FavoritesRequest struct {
 }
 
 type FavoritesResult struct {
+	Coverage *DataCoverage
+
 	Items    []favorites.Item
 	Total    int
 	HasTotal bool
@@ -229,6 +247,8 @@ type ArticleAccountsRequest struct {
 }
 
 type ArticleAccountsResult struct {
+	Coverage *DataCoverage
+
 	Items []articles.Account
 	Total int
 }
@@ -246,6 +266,8 @@ type ArticlesRequest struct {
 }
 
 type ArticlesResult struct {
+	Coverage *DataCoverage
+
 	Items    []articles.Article
 	Range    TimeRange
 	Total    int
@@ -266,6 +288,8 @@ type SNSFeedRequest struct {
 }
 
 type SNSFeedResult struct {
+	Coverage *DataCoverage
+
 	Items    []sns.Post
 	Range    TimeRange
 	Total    int
@@ -285,6 +309,8 @@ type SNSNotificationsRequest struct {
 }
 
 type SNSNotificationsResult struct {
+	Coverage *DataCoverage
+
 	Items    []sns.Notification
 	Range    TimeRange
 	Total    int
@@ -324,7 +350,7 @@ func (rt Runtime) withDefaults() Runtime {
 		rt.DiscoverContact = key.DiscoverContactDB
 	}
 	if rt.ContactCachePath == nil {
-		rt.ContactCachePath = key.ContactCachePath
+		rt.ContactCachePath = func(account string) (string, error) { return key.ReadOnlyCachePath(account, "contact/contact.db") }
 	}
 	if rt.Now == nil {
 		rt.Now = time.Now
@@ -332,7 +358,13 @@ func (rt Runtime) withDefaults() Runtime {
 	return rt
 }
 
-func (rt Runtime) Contacts(ctx context.Context, req ContactsRequest) (ContactsResult, error) {
+func (rt Runtime) Contacts(ctx context.Context, req ContactsRequest) (out ContactsResult, err error) {
+	rt, ctx, coverage := rt.beginRead(ctx)
+	defer func() {
+		if err == nil {
+			out.Coverage = coverage.finish(false)
+		}
+	}()
 	if req.Kind == "" {
 		req.Kind = contacts.KindAll
 	}
@@ -362,7 +394,13 @@ func (rt Runtime) Contacts(ctx context.Context, req ContactsRequest) (ContactsRe
 	}, nil
 }
 
-func (rt Runtime) ContactDetail(ctx context.Context, req ContactDetailRequest) (ContactDetailResult, error) {
+func (rt Runtime) ContactDetail(ctx context.Context, req ContactDetailRequest) (out ContactDetailResult, err error) {
+	rt, ctx, coverage := rt.beginRead(ctx)
+	defer func() {
+		if err == nil {
+			out.Coverage = coverage.finish(false)
+		}
+	}()
 	target, cachePath, err := rt.ContactCache(ctx, req.CacheMode)
 	if err != nil {
 		return ContactDetailResult{}, err
@@ -374,7 +412,7 @@ func (rt Runtime) ContactDetail(ctx context.Context, req ContactDetailRequest) (
 	if req.ResolveAvatar {
 		if headPath, ok := rt.HeadImageCachePath(ctx, req.CacheMode); ok {
 			if cacheDir, err := media.MediaCacheDir(target.Account); err == nil {
-				avatar := media.ResolveAvatar(headPath, item.Username, cacheDir)
+				avatar := media.ResolveAvatarContext(ctx, headPath, item.Username, cacheDir)
 				item.AvatarStatus = avatar.Status
 				item.AvatarPath = avatar.Path
 				item.AvatarReason = avatar.Reason
@@ -384,7 +422,13 @@ func (rt Runtime) ContactDetail(ctx context.Context, req ContactDetailRequest) (
 	return ContactDetailResult{Target: target, Item: item}, nil
 }
 
-func (rt Runtime) Members(ctx context.Context, req MembersRequest) (MembersResult, error) {
+func (rt Runtime) Members(ctx context.Context, req MembersRequest) (out MembersResult, err error) {
+	rt, ctx, coverage := rt.beginRead(ctx)
+	defer func() {
+		if err == nil {
+			out.Coverage = coverage.finish(false)
+		}
+	}()
 	_, cachePath, err := rt.ContactCache(ctx, req.CacheMode)
 	if err != nil {
 		return MembersResult{}, err
@@ -416,7 +460,13 @@ func (rt Runtime) Members(ctx context.Context, req MembersRequest) (MembersResul
 	return MembersResult{Group: result}, nil
 }
 
-func (rt Runtime) Sessions(ctx context.Context, req SessionsRequest) (SessionsResult, error) {
+func (rt Runtime) Sessions(ctx context.Context, req SessionsRequest) (out SessionsResult, err error) {
+	rt, ctx, coverage := rt.beginRead(ctx)
+	defer func() {
+		if err == nil {
+			out.Coverage = coverage.finish(false)
+		}
+	}()
 	if req.Kind == "" {
 		req.Kind = contacts.KindAll
 	}
@@ -438,7 +488,13 @@ func (rt Runtime) Sessions(ctx context.Context, req SessionsRequest) (SessionsRe
 	}, nil
 }
 
-func (rt Runtime) Messages(ctx context.Context, req MessagesRequest) (MessagesResult, error) {
+func (rt Runtime) Messages(ctx context.Context, req MessagesRequest) (out MessagesResult, err error) {
+	rt, ctx, coverage := rt.beginRead(ctx)
+	defer func() {
+		if err == nil {
+			out.Coverage = coverage.finish(out.Execution.IndexUsed)
+		}
+	}()
 	rt = rt.withDefaults()
 	order, err := messages.NormalizeOrder(req.Order)
 	if err != nil {
@@ -504,6 +560,9 @@ func (rt Runtime) Messages(ctx context.Context, req MessagesRequest) (MessagesRe
 	if req.WantHasMore && req.Limit > 0 {
 		queryLimit = req.Limit + 1
 	}
+	for _, path := range cachePaths {
+		observeCache(ctx, path, true)
+	}
 	service := messages.NewService(cachePaths)
 	list, execution, err := ListMessagesMaybeIndex(ctx, target.Account, cachePaths, service, !req.NoIndex, messages.QueryOptions{
 		Username:      username,
@@ -523,7 +582,7 @@ func (rt Runtime) Messages(ctx context.Context, req MessagesRequest) (MessagesRe
 		return MessagesResult{}, err
 	}
 	page, hasMore := trimMessagePage(list, req.Limit)
-	rt.EnrichMessageMedia(target, page)
+	rt.EnrichMessageMedia(ctx, target, page)
 	messages.ApplyChatInfo(page, rt.ChatInfoMapForUsernames(ctx, username))
 	nextAfterSeq := int64(0)
 	if hasMore && len(page) > 0 {
@@ -537,7 +596,13 @@ func (rt Runtime) Messages(ctx context.Context, req MessagesRequest) (MessagesRe
 	return MessagesResult{Order: order, NextCursor: nextCursor, Target: target, Items: page, Range: rangeValue, Execution: execution, HasMore: hasMore, NextAfterSeq: nextAfterSeq}, nil
 }
 
-func (rt Runtime) Search(ctx context.Context, req SearchRequest) (SearchResult, error) {
+func (rt Runtime) Search(ctx context.Context, req SearchRequest) (out SearchResult, err error) {
+	rt, ctx, coverage := rt.beginRead(ctx)
+	defer func() {
+		if err == nil {
+			out.Coverage = coverage.finish(out.Execution.IndexUsed)
+		}
+	}()
 	queryText := strings.TrimSpace(req.Query)
 	if queryText == "" {
 		return SearchResult{}, fmt.Errorf("query is required")
@@ -578,7 +643,7 @@ func (rt Runtime) Search(ctx context.Context, req SearchRequest) (SearchResult, 
 	if err != nil {
 		return SearchResult{}, err
 	}
-	rt.EnrichMessageMedia(target, list)
+	rt.EnrichMessageMedia(ctx, target, list)
 	return SearchResult{
 		Items:        list,
 		Range:        rangeValue,
@@ -589,7 +654,13 @@ func (rt Runtime) Search(ctx context.Context, req SearchRequest) (SearchResult, 
 	}, nil
 }
 
-func (rt Runtime) Timeline(ctx context.Context, req TimelineRequest) (TimelineResult, error) {
+func (rt Runtime) Timeline(ctx context.Context, req TimelineRequest) (out TimelineResult, err error) {
+	rt, ctx, coverage := rt.beginRead(ctx)
+	defer func() {
+		if err == nil {
+			out.Coverage = coverage.finish(out.Execution.IndexUsed)
+		}
+	}()
 	if req.Kind == "" {
 		req.Kind = contacts.KindAll
 	}
@@ -626,6 +697,9 @@ func (rt Runtime) Timeline(ctx context.Context, req TimelineRequest) (TimelineRe
 	if err != nil {
 		return TimelineResult{}, err
 	}
+	for _, path := range cachePaths {
+		observeCache(ctx, path, true)
+	}
 	service := messages.NewService(cachePaths)
 	result, execution, err := TimelineMaybeIndex(ctx, target.Account, cachePaths, service, !req.NoIndex, timeline.QueryOptions{
 		Chats:         chats,
@@ -639,7 +713,7 @@ func (rt Runtime) Timeline(ctx context.Context, req TimelineRequest) (TimelineRe
 	if err != nil {
 		return TimelineResult{}, err
 	}
-	rt.EnrichMessageMedia(target, result.Items)
+	rt.EnrichMessageMedia(ctx, target, result.Items)
 	return TimelineResult{
 		Items:        result.Items,
 		Range:        rangeValue,
@@ -650,7 +724,13 @@ func (rt Runtime) Timeline(ctx context.Context, req TimelineRequest) (TimelineRe
 	}, nil
 }
 
-func (rt Runtime) NewMessages(ctx context.Context, req NewMessagesRequest) (NewMessagesResult, error) {
+func (rt Runtime) NewMessages(ctx context.Context, req NewMessagesRequest) (out NewMessagesResult, err error) {
+	rt, ctx, coverage := rt.beginRead(ctx)
+	defer func() {
+		if err == nil {
+			out.Coverage = coverage.finish(false)
+		}
+	}()
 	target, err := rt.ContactTarget()
 	if err != nil {
 		return NewMessagesResult{}, err
@@ -698,6 +778,9 @@ func (rt Runtime) NewMessages(ctx context.Context, req NewMessagesRequest) (NewM
 	if err != nil {
 		return NewMessagesResult{}, err
 	}
+	for _, path := range cachePaths {
+		observeCache(ctx, path, true)
+	}
 	service := messages.NewService(cachePaths)
 	var list []messages.Message
 	for username, since := range changedSince {
@@ -723,7 +806,7 @@ func (rt Runtime) NewMessages(ctx context.Context, req NewMessagesRequest) (NewM
 		return list[i].ID < list[j].ID
 	})
 	page, hasMore := trimMessagePage(list, req.Limit)
-	rt.EnrichMessageMedia(target, page)
+	rt.EnrichMessageMedia(ctx, target, page)
 	if req.Commit {
 		newState := copyState(currentState)
 		for username, since := range changedSince {
@@ -753,7 +836,13 @@ func (rt Runtime) NewMessages(ctx context.Context, req NewMessagesRequest) (NewM
 	}, nil
 }
 
-func (rt Runtime) Favorites(ctx context.Context, req FavoritesRequest) (FavoritesResult, error) {
+func (rt Runtime) Favorites(ctx context.Context, req FavoritesRequest) (out FavoritesResult, err error) {
+	rt, ctx, coverage := rt.beginRead(ctx)
+	defer func() {
+		if err == nil {
+			out.Coverage = coverage.finish(false)
+		}
+	}()
 	target, cachePath, err := rt.FavoriteCachePath(ctx, req.CacheMode)
 	if err != nil {
 		return FavoritesResult{}, err
@@ -774,7 +863,13 @@ func (rt Runtime) Favorites(ctx context.Context, req FavoritesRequest) (Favorite
 	return FavoritesResult{Items: items, Total: total, HasTotal: req.WantTotal, HasMore: req.WantTotal && req.Offset+len(items) < total}, nil
 }
 
-func (rt Runtime) ArticleAccounts(ctx context.Context, req ArticleAccountsRequest) (ArticleAccountsResult, error) {
+func (rt Runtime) ArticleAccounts(ctx context.Context, req ArticleAccountsRequest) (out ArticleAccountsResult, err error) {
+	rt, ctx, coverage := rt.beginRead(ctx)
+	defer func() {
+		if err == nil {
+			out.Coverage = coverage.finish(false)
+		}
+	}()
 	_, contactPath, err := rt.ContactCache(ctx, req.CacheMode)
 	if err != nil {
 		return ArticleAccountsResult{}, err
@@ -786,7 +881,13 @@ func (rt Runtime) ArticleAccounts(ctx context.Context, req ArticleAccountsReques
 	return ArticleAccountsResult{Items: items, Total: len(items)}, nil
 }
 
-func (rt Runtime) Articles(ctx context.Context, req ArticlesRequest) (ArticlesResult, error) {
+func (rt Runtime) Articles(ctx context.Context, req ArticlesRequest) (out ArticlesResult, err error) {
+	rt, ctx, coverage := rt.beginRead(ctx)
+	defer func() {
+		if err == nil {
+			out.Coverage = coverage.finish(false)
+		}
+	}()
 	rangeValue, err := ParseMessageRange(req.Date, req.StartText, req.EndText, rt.withDefaults().Now())
 	if err != nil {
 		return ArticlesResult{}, err
@@ -826,7 +927,13 @@ func (rt Runtime) Articles(ctx context.Context, req ArticlesRequest) (ArticlesRe
 	return ArticlesResult{Items: items, Range: rangeValue, Total: total, HasTotal: req.WantTotal, HasMore: req.WantTotal && req.Offset+len(items) < total}, nil
 }
 
-func (rt Runtime) SNSFeed(ctx context.Context, req SNSFeedRequest) (SNSFeedResult, error) {
+func (rt Runtime) SNSFeed(ctx context.Context, req SNSFeedRequest) (out SNSFeedResult, err error) {
+	rt, ctx, coverage := rt.beginRead(ctx)
+	defer func() {
+		if err == nil {
+			out.Coverage = coverage.finish(false)
+		}
+	}()
 	rangeValue, err := ParseMessageRange(req.Date, req.StartText, req.EndText, rt.withDefaults().Now())
 	if err != nil {
 		return SNSFeedResult{}, err
@@ -855,7 +962,13 @@ func (rt Runtime) SNSFeed(ctx context.Context, req SNSFeedRequest) (SNSFeedResul
 	return SNSFeedResult{Items: items, Range: rangeValue, Total: total, HasTotal: req.WantTotal, HasMore: req.WantTotal && req.Offset+len(items) < total}, nil
 }
 
-func (rt Runtime) SNSNotifications(ctx context.Context, req SNSNotificationsRequest) (SNSNotificationsResult, error) {
+func (rt Runtime) SNSNotifications(ctx context.Context, req SNSNotificationsRequest) (out SNSNotificationsResult, err error) {
+	rt, ctx, coverage := rt.beginRead(ctx)
+	defer func() {
+		if err == nil {
+			out.Coverage = coverage.finish(false)
+		}
+	}()
 	rangeValue, err := ParseMessageRange(req.Date, req.StartText, req.EndText, rt.withDefaults().Now())
 	if err != nil {
 		return SNSNotificationsResult{}, err
@@ -954,6 +1067,7 @@ func (rt Runtime) ContactCache(ctx context.Context, mode CacheMode) (key.TargetD
 		return key.TargetDB{}, "", err
 	}
 	if _, err := os.Stat(cachePath); err == nil {
+		observeCache(ctx, cachePath, true)
 		return target, cachePath, nil
 	} else if !os.IsNotExist(err) {
 		return key.TargetDB{}, "", err
@@ -961,10 +1075,11 @@ func (rt Runtime) ContactCache(ctx context.Context, mode CacheMode) (key.TargetD
 	if mode.ReadOnly {
 		return key.TargetDB{}, "", fmt.Errorf("contact cache does not exist; run `wxview init` or POST /v1/cache/refresh first")
 	}
-	res, path, err := key.EnsureContactCache(ctx)
+	res, path, err := key.EnsureDBCache(ctx, target)
 	if err != nil {
 		return key.TargetDB{}, "", err
 	}
+	observeCache(ctx, path, true)
 	return res.Target, path, nil
 }
 
@@ -974,16 +1089,35 @@ func (rt Runtime) SessionCachePath(ctx context.Context, mode CacheMode) (string,
 }
 
 func (rt Runtime) SessionCacheTargetPath(ctx context.Context, mode CacheMode) (key.TargetDB, string, error) {
-	if mode.Refresh {
-		return refreshSessionCache(ctx)
+	return rt.requiredCache(ctx, mode, "session/session.db", func() error { _, _, err := refreshSessionCache(ctx); return err })
+}
+
+func (rt Runtime) requiredCache(ctx context.Context, mode CacheMode, relative string, refresh func() error) (key.TargetDB, string, error) {
+	account, err := rt.ContactTarget()
+	if err != nil {
+		return key.TargetDB{}, "", err
 	}
-	if target, path, ok := key.SessionCachePathIfExists(); ok {
+	target := key.TargetFor(account, relative)
+	if mode.Refresh {
+		if err := refresh(); err != nil {
+			return key.TargetDB{}, "", err
+		}
+	}
+	path, err := key.ReadOnlyCachePath(account.Account, relative)
+	if err != nil {
+		return key.TargetDB{}, "", err
+	}
+	if _, err = os.Stat(path); err == nil {
+		observeCache(ctx, path, true)
 		return target, path, nil
 	}
 	if mode.ReadOnly {
-		return key.TargetDB{}, "", fmt.Errorf("session cache does not exist; run `wxview init` or POST /v1/cache/refresh first")
+		return key.TargetDB{}, "", fmt.Errorf("%s cache does not exist; run `wxview init` or POST /v1/cache/refresh first", strings.Split(relative, "/")[0])
 	}
-	res, path, err := key.EnsureSessionCache(ctx)
+	res, path, err := key.EnsureDBCache(ctx, target)
+	if err == nil {
+		observeCache(ctx, path, true)
+	}
 	return res.Target, path, err
 }
 
@@ -993,17 +1127,15 @@ func (rt Runtime) MessageCachePaths(ctx context.Context, mode CacheMode) ([]stri
 			return nil, err
 		}
 	}
-	paths, allExist, err := key.MessageCachePaths()
+	target, err := rt.ContactTarget()
 	if err != nil {
 		return nil, err
 	}
-	if allExist && len(paths) > 0 {
-		return paths, nil
+	paths, err := key.AccountMessageCachePaths(ctx, target, false)
+	if err != nil && !mode.ReadOnly {
+		return key.AccountMessageCachePaths(ctx, target, true)
 	}
-	if mode.ReadOnly {
-		return nil, fmt.Errorf("message cache does not exist; run `wxview init` or POST /v1/cache/refresh first")
-	}
-	return key.EnsureMessageCaches(ctx)
+	return paths, err
 }
 
 func (rt Runtime) ArticleCachePaths(ctx context.Context, mode CacheMode) ([]string, error) {
@@ -1011,47 +1143,37 @@ func (rt Runtime) ArticleCachePaths(ctx context.Context, mode CacheMode) ([]stri
 	if err != nil {
 		return nil, err
 	}
-	bizPaths, bizExist, err := key.BizMessageCachePaths()
+	target, err := rt.ContactTarget()
 	if err != nil {
 		return nil, err
 	}
-	if !bizExist && !mode.ReadOnly {
-		_ = ensureBizMessageCachesBestEffort(ctx)
-		bizPaths, _, _ = key.BizMessageCachePaths()
+	targets, err := key.AccountShards(target, "biz_message_")
+	if err != nil {
+		return nil, err
 	}
-	for _, path := range bizPaths {
-		if info, statErr := os.Stat(path); statErr == nil && !info.IsDir() {
+	for _, target := range targets {
+		path, err := key.ReadOnlyCachePath(target.Account, target.DBRelPath)
+		if err != nil {
+			continue
+		}
+		if _, err = os.Stat(path); err != nil && !mode.ReadOnly {
+			_, _, _ = key.EnsureDBCache(ctx, target)
+		}
+		if info, err := os.Stat(path); err == nil && !info.IsDir() {
 			paths = append(paths, path)
+		} else {
+			observeCache(ctx, path, false)
 		}
 	}
 	return paths, nil
 }
 
 func (rt Runtime) FavoriteCachePath(ctx context.Context, mode CacheMode) (key.TargetDB, string, error) {
-	if mode.Refresh {
-		return refreshFavoriteCache(ctx)
-	}
-	if target, path, ok := key.FavoriteCachePathIfExists(); ok {
-		return target, path, nil
-	}
-	if mode.ReadOnly {
-		return key.TargetDB{}, "", fmt.Errorf("favorite cache does not exist; run `wxview init` or POST /v1/cache/refresh first")
-	}
-	res, path, err := key.EnsureFavoriteCache(ctx)
-	return res.Target, path, err
+	return rt.requiredCache(ctx, mode, "favorite/favorite.db", func() error { _, _, err := refreshFavoriteCache(ctx); return err })
 }
 
 func (rt Runtime) SNSCachePath(ctx context.Context, mode CacheMode) (string, error) {
-	if mode.Refresh {
-		return refreshSNSCache(ctx)
-	}
-	if _, path, ok := key.SNSCachePathIfExists(); ok {
-		return path, nil
-	}
-	if mode.ReadOnly {
-		return "", fmt.Errorf("sns cache does not exist; run `wxview init` or POST /v1/cache/refresh first")
-	}
-	_, path, err := key.EnsureSNSCache(ctx)
+	_, path, err := rt.requiredCache(ctx, mode, "sns/sns.db", func() error { _, err := refreshSNSCache(ctx); return err })
 	return path, err
 }
 
@@ -1061,34 +1183,54 @@ func HeadImageCachePathReadOnly() (string, bool) {
 }
 
 func (rt Runtime) HeadImageCachePath(ctx context.Context, mode CacheMode) (string, bool) {
+	target, err := rt.ContactTarget()
+	if err != nil {
+		return "", false
+	}
+	path, err := key.ReadOnlyCachePath(target.Account, "head_image/head_image.db")
+	if err != nil {
+		return "", false
+	}
 	if mode.Refresh && !mode.ReadOnly {
 		if client, err := daemonClient(); err == nil && client.Healthy(ctx) {
 			_, _ = client.Call(ctx, daemon.ActionRefreshAvatars)
 		}
-		if _, path, err := key.EnsureHeadImageCache(ctx); err == nil {
-			return path, true
+		if _, _, err := key.EnsureDBCache(ctx, key.TargetFor(target, "head_image/head_image.db")); err != nil {
+			observeCache(ctx, path, false)
+			return "", false
 		}
+	}
+	if _, err = os.Stat(path); err != nil && !mode.ReadOnly && !mode.Refresh {
+		_, _, _ = key.EnsureDBCache(ctx, key.TargetFor(target, "head_image/head_image.db"))
+	}
+	observeCache(ctx, path, false)
+	info, err := os.Stat(path)
+	return path, err == nil && !info.IsDir()
+}
+
+func (rt Runtime) existingContacts(ctx context.Context) (string, bool) {
+	target, err := rt.ContactTarget()
+	if err != nil {
 		return "", false
 	}
-	if _, path, ok := key.HeadImageCachePathIfExists(); ok {
-		return path, true
-	}
-	if mode.ReadOnly {
+	path, err := rt.withDefaults().ContactCachePath(target.Account)
+	if err != nil {
+		unresolvedDependency(ctx, "contact/contact.db", "contacts", "cache_path_unavailable")
 		return "", false
 	}
-	if _, path, err := key.EnsureHeadImageCache(ctx); err == nil {
-		return path, true
-	}
-	return "", false
+	observeCache(ctx, path, false)
+	info, err := os.Stat(path)
+	return path, err == nil && !info.IsDir()
 }
 
 func (rt Runtime) LoadExistingChatInfoMap(ctx context.Context) map[string]messages.ChatInfo {
-	_, path, ok := key.HasContactCache()
+	path, ok := rt.existingContacts(ctx)
 	if !ok {
 		return nil
 	}
 	list, err := contacts.NewService(path).List(ctx)
 	if err != nil {
+		failedCacheRead(ctx, path)
 		return nil
 	}
 	return chatInfoMapFromContacts(list)
@@ -1099,12 +1241,15 @@ func (rt Runtime) ChatInfoForUsername(ctx context.Context, username string) mess
 	if username == "" {
 		return messages.ChatInfo{}
 	}
-	_, path, ok := key.HasContactCache()
+	path, ok := rt.existingContacts(ctx)
 	if !ok {
 		return messages.ChatInfo{Username: username, Kind: messages.ChatKindUnknown, DisplayName: username}
 	}
 	contact, found, err := contacts.NewService(path).Lookup(ctx, username)
 	if err != nil || !found {
+		if err != nil {
+			failedCacheRead(ctx, path)
+		}
 		return messages.ChatInfo{Username: username, Kind: messages.ChatKindUnknown, DisplayName: username}
 	}
 	return chatInfoFromContact(contact)
@@ -1202,7 +1347,7 @@ func chatInfoFromContact(contact contacts.Contact) messages.ChatInfo {
 	}
 }
 
-func (rt Runtime) EnrichMessageMedia(target key.TargetDB, list []messages.Message) {
+func (rt Runtime) EnrichMessageMedia(ctx context.Context, target key.TargetDB, list []messages.Message) {
 	if len(list) == 0 {
 		return
 	}
@@ -1210,6 +1355,7 @@ func (rt Runtime) EnrichMessageMedia(target key.TargetDB, list []messages.Messag
 	if err != nil {
 		return
 	}
+	resolver.Context = ctx
 	messages.EnrichMediaDetails(list, resolver)
 }
 
@@ -1219,20 +1365,19 @@ func mediaResolverFor(target key.TargetDB) (*media.Resolver, error) {
 		return nil, err
 	}
 	resourceDBs := []string{}
-	if path, err := key.CachePath(target.Account, "message/message_resource.db"); err == nil {
-		if info, statErr := os.Stat(path); statErr == nil && !info.IsDir() {
+	if path, err := key.ReadOnlyCachePath(target.Account, "message/message_resource.db"); err == nil {
+		_, sourceErr := os.Stat(key.TargetFor(target, "message/message_resource.db").DBPath)
+		if info, statErr := os.Stat(path); sourceErr == nil || (statErr == nil && !info.IsDir()) {
 			resourceDBs = append(resourceDBs, path)
 		}
 	}
 	if targets, err := key.AccountShards(target, "media_"); err == nil {
 		for _, mediaTarget := range targets {
-			path, err := key.CachePath(target.Account, mediaTarget.DBRelPath)
+			path, err := key.ReadOnlyCachePath(target.Account, mediaTarget.DBRelPath)
 			if err != nil {
 				continue
 			}
-			if info, statErr := os.Stat(path); statErr == nil && !info.IsDir() {
-				resourceDBs = append(resourceDBs, path)
-			}
+			resourceDBs = append(resourceDBs, path)
 		}
 	}
 	resolver := media.NewResolver(target.DataDir, cacheDir, resourceDBs...)
@@ -1341,7 +1486,7 @@ func queryIndexUsability(ctx context.Context, account string, cachePaths []strin
 		return "", msgindex.Usability{Reason: "index_path_error"}, false
 	}
 	if strings.TrimSpace(opts.SessionCachePath) == "" {
-		if path, err := key.CachePath(account, "session/session.db"); err == nil {
+		if path, err := key.ReadOnlyCachePath(account, "session/session.db"); err == nil {
 			if info, err := os.Stat(path); err == nil && !info.IsDir() {
 				opts.SessionCachePath = path
 			}

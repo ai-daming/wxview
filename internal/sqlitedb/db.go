@@ -14,10 +14,27 @@ import (
 
 const BusyTimeoutMS = 30000
 
+type readObserverKey struct{}
+
+// WithReadObserver observes database paths immediately before read-only opens.
+// It is request-scoped and never changes connection or query semantics.
+func WithReadObserver(ctx context.Context, observe func(string)) context.Context {
+	return context.WithValue(ctx, readObserverKey{}, observe)
+}
+
+// ObserveRead also covers a dependency that cannot be opened (for example an
+// optional media cache known from the source directory but missing locally).
+func ObserveRead(ctx context.Context, path string) {
+	if observe, ok := ctx.Value(readObserverKey{}).(func(string)); ok {
+		observe(path)
+	}
+}
+
 func OpenReadOnly(ctx context.Context, path string) (*sql.DB, error) {
 	if strings.TrimSpace(path) == "" {
 		return nil, fmt.Errorf("sqlite path is empty")
 	}
+	ObserveRead(ctx, path)
 	db, err := sql.Open("sqlite", FileURI(path, url.Values{
 		"mode":      {"ro"},
 		"immutable": {"1"},
@@ -37,6 +54,7 @@ func OpenReadOnlyLive(ctx context.Context, path string) (*sql.DB, error) {
 	if strings.TrimSpace(path) == "" {
 		return nil, fmt.Errorf("sqlite path is empty")
 	}
+	ObserveRead(ctx, path)
 	db, err := sql.Open("sqlite", FileURI(path, url.Values{"mode": {"ro"}}))
 	if err != nil {
 		return nil, err

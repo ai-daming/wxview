@@ -32,7 +32,7 @@ func TestCacheStatusesReportsFreshCache(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := updateCacheMetadata(target, cachePath, hex.EncodeToString(sourceBytes[:decrypt.SaltSize]), sig); err != nil {
+	if err := updateCacheMetadata(target, cachePath, hex.EncodeToString(sourceBytes[:decrypt.SaltSize]), sig, testCacheRevision(t, cachePath)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -75,7 +75,7 @@ func TestCacheStatusesReportsStaleMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := updateCacheMetadata(target, cachePath, hex.EncodeToString(sourceBytes[:decrypt.SaltSize]), sig); err != nil {
+	if err := updateCacheMetadata(target, cachePath, hex.EncodeToString(sourceBytes[:decrypt.SaltSize]), sig, testCacheRevision(t, cachePath)); err != nil {
 		t.Fatal(err)
 	}
 	changed := time.Unix(1700000123, 0)

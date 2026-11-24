@@ -58,10 +58,20 @@ func TestWebAPIWALRefreshAndReadOnlyPreview(t *testing.T) {
 	check := func(want int) {
 		r := request(http.MethodGet, "/v1/messages?username=alice&limit=10&refresh=true")
 		var response struct {
+			Meta struct {
+				Coverage *query.DataCoverage `json:"data_coverage"`
+			} `json:"meta"`
 			Items []messages.Message `json:"items"`
 		}
 		if err = json.Unmarshal(r.Body.Bytes(), &response); err != nil || len(response.Items) != want {
 			t.Fatal("HTTP query has unexpected message count")
+		}
+		wantState := "stale"
+		if want == 2 {
+			wantState = "fresh"
+		}
+		if response.Meta.Coverage == nil || response.Meta.Coverage.State != wantState {
+			t.Fatalf("coverage=%+v, want %s", response.Meta.Coverage, wantState)
 		}
 	}
 	if err = os.WriteFile(filepath.Join(root, "message/message_0.db-wal"), f.WAL1, 0600); err != nil {
@@ -70,6 +80,20 @@ func TestWebAPIWALRefreshAndReadOnlyPreview(t *testing.T) {
 	check(1) // GET refresh=true must remain ignored.
 	request(http.MethodPost, "/v1/cache/refresh?scope=messages")
 	check(2)
+	for _, path := range []string{"/v1/search?username=alice&query=baseline&limit=10", "/v1/timeline?username=alice&start=0&end=500&limit=10", "/v1/new-messages", "/v1/contacts?limit=10", "/v1/sessions?limit=10"} {
+		response := request(http.MethodGet, path)
+		var decoded struct {
+			Meta struct {
+				Coverage *query.DataCoverage `json:"data_coverage"`
+			} `json:"meta"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &decoded); err != nil {
+			t.Fatal(err)
+		}
+		if decoded.Meta.Coverage == nil || decoded.Meta.Coverage.State != "fresh" {
+			t.Fatalf("%s coverage=%+v", path, decoded.Meta.Coverage)
+		}
+	}
 	state, err := (query.Runtime{}).NewMessagesStatePath("synthetic", true)
 	if err != nil {
 		t.Fatal(err)
@@ -81,4 +105,41 @@ func TestWebAPIWALRefreshAndReadOnlyPreview(t *testing.T) {
 	if !bytes.Equal(before, after) || (os.IsNotExist(readErr) != os.IsNotExist(afterErr)) {
 		t.Fatal("GET preview advanced incremental state")
 	}
+	// Missing provenance is unknown and GET must not repair it implicitly.
+	metadata, _ := key.ReadOnlyCachePath("synthetic", "mtime.json")
+	if err = os.Remove(metadata); err != nil {
+		t.Fatal(err)
+	}
+	response := request(http.MethodGet, "/v1/messages?username=alice&limit=10&refresh=true")
+	var decoded struct {
+		Meta struct {
+			Coverage *query.DataCoverage `json:"data_coverage"`
+		} `json:"meta"`
+	}
+	if err = json.Unmarshal(response.Body.Bytes(), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Meta.Coverage == nil || decoded.Meta.Coverage.State != "unknown" {
+		t.Fatal("missing provenance was presented as fresh")
+	}
+	if _, err = os.Stat(metadata); !os.IsNotExist(err) {
+		t.Fatal("GET recreated refresh metadata")
+	}
+	contact, _ := key.ReadOnlyCachePath("synthetic", "contact/contact.db")
+	if err = os.Remove(contact); err != nil {
+		t.Fatal(err)
+	}
+	response = request(http.MethodGet, "/v1/messages?username=alice&limit=10")
+	if err = json.Unmarshal(response.Body.Bytes(), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Meta.Coverage.State != "partial" {
+		t.Fatal("missing optional contact cache was not reported")
+	}
+	missing := httptest.NewRecorder()
+	h.ServeHTTP(missing, httptest.NewRequest(http.MethodGet, "/v1/contacts?limit=10", nil))
+	if missing.Code < 400 {
+		t.Fatal("missing required contact cache was downgraded to success")
+	}
+
 }

@@ -28,7 +28,7 @@ func (r Resolver) ResolveResource(req ResourceRequest) Info {
 	if len(keys) == 0 && strings.TrimSpace(req.Name) == "" && req.Size <= 0 {
 		return notFound(kind, "media locator missing")
 	}
-	files := queryResourceMedia(r.ResourceDBs, r.DataDir, mediaType, resourceKeysForLookup(keys, req.Name))
+	files := queryResourceMedia(r.context(), r.ResourceDBs, r.DataDir, mediaType, resourceKeysForLookup(keys, req.Name))
 	if len(files) == 0 {
 		return notFound(kind, "local media resource not found")
 	}

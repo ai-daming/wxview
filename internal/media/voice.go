@@ -36,17 +36,18 @@ func (r Resolver) ResolveVoice(chatUsername string, localID int64, serverID int6
 		return notFound("voice", "not a voice message")
 	}
 	for _, dbPath := range r.ResourceDBs {
+		sqlitedb.ObserveRead(r.context(), dbPath)
 		if _, err := os.Stat(dbPath); err != nil {
 			continue
 		}
 		if chatUsername != "" && localID > 0 {
-			if chatID, ok := queryChatNameID(dbPath, chatUsername); ok {
+			if chatID, ok := queryChatNameID(r.context(), dbPath, chatUsername); ok {
 				if serverID > 0 {
-					if data, ok := queryVoiceByChatServerID(dbPath, chatID, serverID); ok {
+					if data, ok := queryVoiceByChatServerID(r.context(), dbPath, chatID, serverID); ok {
 						return r.writeVoiceData(dbPath, data, fmt.Sprintf("svr:%d", serverID))
 					}
 				}
-				if data, ok := queryVoiceByLocalID(dbPath, chatID, localID); ok {
+				if data, ok := queryVoiceByLocalID(r.context(), dbPath, chatID, localID); ok {
 					return r.writeVoiceData(dbPath, data, fmt.Sprintf("chat:%d:%d", chatID, localID))
 				}
 			}
@@ -72,10 +73,11 @@ func (r Resolver) ResolveVoices(requests []VoiceRequest) map[string]Info {
 		if len(pending) == 0 {
 			break
 		}
+		sqlitedb.ObserveRead(r.context(), dbPath)
 		if _, err := os.Stat(dbPath); err != nil {
 			continue
 		}
-		db, err := sqlitedb.OpenReadOnly(context.Background(), dbPath)
+		db, err := sqlitedb.OpenReadOnly(r.context(), dbPath)
 		if err != nil {
 			continue
 		}
@@ -362,16 +364,16 @@ func decompressVoicePayload(data []byte) ([]byte, bool) {
 	return nil, false
 }
 
-func queryVoiceByChatServerID(dbPath string, chatNameID int64, serverID int64) ([]byte, bool) {
-	return queryVoiceData(dbPath, "SELECT voice_data FROM VoiceInfo WHERE chat_name_id = ? AND svr_id = ? AND length(voice_data) > 0 LIMIT 1;", chatNameID, serverID)
+func queryVoiceByChatServerID(ctx context.Context, dbPath string, chatNameID int64, serverID int64) ([]byte, bool) {
+	return queryVoiceData(ctx, dbPath, "SELECT voice_data FROM VoiceInfo WHERE chat_name_id = ? AND svr_id = ? AND length(voice_data) > 0 LIMIT 1;", chatNameID, serverID)
 }
 
-func queryVoiceByLocalID(dbPath string, chatNameID int64, localID int64) ([]byte, bool) {
-	return queryVoiceData(dbPath, "SELECT voice_data FROM VoiceInfo WHERE chat_name_id = ? AND local_id = ? AND length(voice_data) > 0 LIMIT 1;", chatNameID, localID)
+func queryVoiceByLocalID(ctx context.Context, dbPath string, chatNameID int64, localID int64) ([]byte, bool) {
+	return queryVoiceData(ctx, dbPath, "SELECT voice_data FROM VoiceInfo WHERE chat_name_id = ? AND local_id = ? AND length(voice_data) > 0 LIMIT 1;", chatNameID, localID)
 }
 
-func queryVoiceData(dbPath string, query string, args ...any) ([]byte, bool) {
-	db, err := sqlitedb.OpenReadOnly(context.Background(), dbPath)
+func queryVoiceData(ctx context.Context, dbPath string, query string, args ...any) ([]byte, bool) {
+	db, err := sqlitedb.OpenReadOnly(ctx, dbPath)
 	if err != nil {
 		return nil, false
 	}
@@ -383,8 +385,8 @@ func queryVoiceData(dbPath string, query string, args ...any) ([]byte, bool) {
 	return data, true
 }
 
-func queryChatNameID(dbPath string, username string) (int64, bool) {
-	db, err := sqlitedb.OpenReadOnly(context.Background(), dbPath)
+func queryChatNameID(ctx context.Context, dbPath string, username string) (int64, bool) {
+	db, err := sqlitedb.OpenReadOnly(ctx, dbPath)
 	if err != nil {
 		return 0, false
 	}

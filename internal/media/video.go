@@ -123,7 +123,7 @@ func (r Resolver) resolveVideoThumbnailPath(createTime int64, chatUsername strin
 }
 
 func (r Resolver) resolveVideoPathFromResources(hints videoHints) (videoCandidate, bool) {
-	files := queryResourceMedia(r.ResourceDBs, r.DataDir, "video", hints.keys)
+	files := queryResourceMedia(r.context(), r.ResourceDBs, r.DataDir, "video", hints.keys)
 	if len(files) == 0 {
 		return videoCandidate{}, false
 	}
@@ -131,7 +131,7 @@ func (r Resolver) resolveVideoPathFromResources(hints videoHints) (videoCandidat
 }
 
 func (r Resolver) resolveVideoThumbnailPathFromResources(hints videoHints, createTime int64, localID int64) (videoCandidate, bool) {
-	files := queryResourceMedia(r.ResourceDBs, r.DataDir, "video", hints.keys)
+	files := queryResourceMedia(r.context(), r.ResourceDBs, r.DataDir, "video", hints.keys)
 	if len(files) == 0 {
 		return videoCandidate{}, false
 	}

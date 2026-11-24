@@ -26,11 +26,12 @@ const (
 )
 
 type ListMeta struct {
-	SchemaVersion int         `json:"schema_version"`
-	Account       AccountMeta `json:"account"`
-	ServerID      string      `json:"server_id"`
-	Resource      string      `json:"resource"`
-	Timezone      string      `json:"timezone,omitempty"`
+	Coverage      *wxquery.DataCoverage `json:"data_coverage,omitempty"`
+	SchemaVersion int                   `json:"schema_version"`
+	Account       AccountMeta           `json:"account"`
+	ServerID      string                `json:"server_id"`
+	Resource      string                `json:"resource"`
+	Timezone      string                `json:"timezone,omitempty"`
 
 	Limit    *int  `json:"limit,omitempty"`
 	Offset   *int  `json:"offset,omitempty"`
@@ -120,6 +121,12 @@ func (h *handler) queryRuntime() wxquery.Runtime {
 	}
 }
 
+func (h *handler) queryRuntimeFor(target key.TargetDB) wxquery.Runtime {
+	rt := h.queryRuntime()
+	rt.DiscoverContact = func() (key.TargetDB, error) { return target, nil }
+	return rt
+}
+
 func (h *handler) handleContactDetail(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "use GET")
@@ -130,12 +137,12 @@ func (h *handler) handleContactDetail(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "missing_username", "username is required")
 		return
 	}
-	_, _, info, err := h.resolveAccount(r.Context(), false)
+	target, _, info, err := h.resolveAccount(r.Context(), false)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "account_discovery_failed", err.Error())
 		return
 	}
-	result, err := h.queryRuntime().ContactDetail(r.Context(), wxquery.ContactDetailRequest{
+	result, err := h.queryRuntimeFor(target).ContactDetail(r.Context(), wxquery.ContactDetailRequest{
 		Username:      username,
 		ResolveAvatar: true,
 		CacheMode:     wxquery.CacheMode{ReadOnly: true},
@@ -145,6 +152,7 @@ func (h *handler) handleContactDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	meta := h.listMeta(info, "contacts.detail")
+	meta.Coverage = result.Coverage
 	total := 1
 	meta.Total = &total
 	meta.Returned = 1
@@ -174,12 +182,12 @@ func (h *handler) handleMembers(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_selector", "username cannot be combined with query")
 		return
 	}
-	_, _, info, err := h.resolveAccount(r.Context(), false)
+	target, _, info, err := h.resolveAccount(r.Context(), false)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "account_discovery_failed", err.Error())
 		return
 	}
-	result, err := h.queryRuntime().Members(r.Context(), wxquery.MembersRequest{
+	result, err := h.queryRuntimeFor(target).Members(r.Context(), wxquery.MembersRequest{
 		Username:  username,
 		Query:     query,
 		CacheMode: wxquery.CacheMode{ReadOnly: true},
@@ -189,6 +197,7 @@ func (h *handler) handleMembers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	meta := h.listMeta(info, "members")
+	meta.Coverage = result.Coverage
 	total := result.Group.Count
 	meta.Total = &total
 	meta.Returned = len(result.Group.Members)
@@ -223,12 +232,12 @@ func (h *handler) handleSessions(w http.ResponseWriter, r *http.Request, unreadO
 		writeError(w, http.StatusBadRequest, "invalid_offset", err.Error())
 		return
 	}
-	_, _, info, err := h.resolveAccount(r.Context(), false)
+	target, _, info, err := h.resolveAccount(r.Context(), false)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "account_discovery_failed", err.Error())
 		return
 	}
-	result, err := h.queryRuntime().Sessions(r.Context(), wxquery.SessionsRequest{
+	result, err := h.queryRuntimeFor(target).Sessions(r.Context(), wxquery.SessionsRequest{
 		Kind:       kind,
 		Query:      q.Get("query"),
 		UnreadOnly: unreadOnly,
@@ -245,6 +254,7 @@ func (h *handler) handleSessions(w http.ResponseWriter, r *http.Request, unreadO
 		resource = "unread"
 	}
 	meta := h.listMeta(info, resource)
+	meta.Coverage = result.Coverage
 	meta.Limit = intPtr(limit)
 	meta.Offset = intPtr(offset)
 	meta.Returned = len(result.Items)
@@ -318,6 +328,7 @@ func (h *handler) handleMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	meta := h.messageMeta(info, "messages", limit, len(result.Items), result.Execution)
+	meta.Coverage = result.Coverage
 	meta.Order = result.Order
 	meta.NextCursor = result.NextCursor
 	meta.Offset = intPtr(offset)
@@ -377,12 +388,12 @@ func (h *handler) handleSearch(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_source", err.Error())
 		return
 	}
-	_, _, info, err := h.resolveAccount(r.Context(), false)
+	target, _, info, err := h.resolveAccount(r.Context(), false)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "account_discovery_failed", err.Error())
 		return
 	}
-	result, err := h.queryRuntime().Search(r.Context(), wxquery.SearchRequest{
+	result, err := h.queryRuntimeFor(target).Search(r.Context(), wxquery.SearchRequest{
 		Query:         query,
 		Kind:          kind,
 		ChatQuery:     chatQuery,
@@ -400,6 +411,7 @@ func (h *handler) handleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	meta := h.messageMeta(info, "search", limit, len(result.Items), result.Execution)
+	meta.Coverage = result.Coverage
 	meta.Offset = intPtr(offset)
 	meta.Query = query
 	meta.Kind = kind
@@ -456,12 +468,12 @@ func (h *handler) handleTimeline(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_no_index", err.Error())
 		return
 	}
-	_, _, info, err := h.resolveAccount(r.Context(), false)
+	target, _, info, err := h.resolveAccount(r.Context(), false)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "account_discovery_failed", err.Error())
 		return
 	}
-	result, err := h.queryRuntime().Timeline(r.Context(), wxquery.TimelineRequest{
+	result, err := h.queryRuntimeFor(target).Timeline(r.Context(), wxquery.TimelineRequest{
 		Username:      username,
 		Kind:          kind,
 		KindProvided:  kindProvided,
@@ -480,6 +492,7 @@ func (h *handler) handleTimeline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	meta := h.messageMeta(info, "timeline", limit, len(result.Items), result.Execution)
+	meta.Coverage = result.Coverage
 	meta.Username = username
 	meta.Kind = ""
 	meta.Query = ""
@@ -547,12 +560,12 @@ func (h *handler) handleNewMessagesReset(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "use POST")
 		return
 	}
-	_, _, info, err := h.resolveAccount(r.Context(), false)
+	target, _, info, err := h.resolveAccount(r.Context(), false)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "account_discovery_failed", err.Error())
 		return
 	}
-	result, err := h.queryRuntime().ResetNewMessages(r.Context())
+	result, err := h.queryRuntimeFor(target).ResetNewMessages(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "state_reset_failed", err.Error())
 		return
@@ -564,12 +577,12 @@ func (h *handler) handleNewMessagesReset(w http.ResponseWriter, r *http.Request)
 }
 
 func (h *handler) writeNewMessages(w http.ResponseWriter, r *http.Request, limit int, includeSource bool, commit bool, reset bool) {
-	_, _, info, err := h.resolveAccount(r.Context(), false)
+	target, _, info, err := h.resolveAccount(r.Context(), false)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "account_discovery_failed", err.Error())
 		return
 	}
-	result, err := h.queryRuntime().NewMessages(r.Context(), wxquery.NewMessagesRequest{
+	result, err := h.queryRuntimeFor(target).NewMessages(r.Context(), wxquery.NewMessagesRequest{
 		Limit:         limit,
 		IncludeSource: includeSource,
 		Commit:        commit,
@@ -581,6 +594,7 @@ func (h *handler) writeNewMessages(w http.ResponseWriter, r *http.Request, limit
 		return
 	}
 	meta := h.messageMeta(info, "new-messages", limit, len(result.Items), wxquery.ExecutionMeta{})
+	meta.Coverage = result.Coverage
 	meta.Mode = "new_messages"
 	meta.HasMore = &result.HasMore
 	meta.FirstRun = boolPtr(result.FirstRun)
@@ -607,12 +621,12 @@ func (h *handler) handleFavorites(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_offset", err.Error())
 		return
 	}
-	_, _, info, err := h.resolveAccount(r.Context(), false)
+	target, _, info, err := h.resolveAccount(r.Context(), false)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "account_discovery_failed", err.Error())
 		return
 	}
-	result, err := h.queryRuntime().Favorites(r.Context(), wxquery.FavoritesRequest{
+	result, err := h.queryRuntimeFor(target).Favorites(r.Context(), wxquery.FavoritesRequest{
 		Type:      q.Get("type"),
 		Query:     q.Get("query"),
 		Limit:     limit,
@@ -625,6 +639,7 @@ func (h *handler) handleFavorites(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	meta := h.listMeta(info, "favorites")
+	meta.Coverage = result.Coverage
 	meta.Limit = intPtr(limit)
 	meta.Offset = intPtr(offset)
 	meta.Returned = len(result.Items)
@@ -639,12 +654,12 @@ func (h *handler) handleArticleAccounts(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "use GET")
 		return
 	}
-	_, _, info, err := h.resolveAccount(r.Context(), false)
+	target, _, info, err := h.resolveAccount(r.Context(), false)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "account_discovery_failed", err.Error())
 		return
 	}
-	result, err := h.queryRuntime().ArticleAccounts(r.Context(), wxquery.ArticleAccountsRequest{
+	result, err := h.queryRuntimeFor(target).ArticleAccounts(r.Context(), wxquery.ArticleAccountsRequest{
 		Query:     r.URL.Query().Get("query"),
 		CacheMode: wxquery.CacheMode{ReadOnly: true},
 	})
@@ -653,6 +668,7 @@ func (h *handler) handleArticleAccounts(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	meta := h.listMeta(info, "articles.accounts")
+	meta.Coverage = result.Coverage
 	meta.Returned = len(result.Items)
 	meta.Total = &result.Total
 	writeJSON(w, http.StatusOK, ItemsResponse[articles.Account]{Meta: meta, Items: result.Items})
@@ -674,12 +690,12 @@ func (h *handler) handleArticles(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_offset", err.Error())
 		return
 	}
-	_, _, info, err := h.resolveAccount(r.Context(), false)
+	target, _, info, err := h.resolveAccount(r.Context(), false)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "account_discovery_failed", err.Error())
 		return
 	}
-	result, err := h.queryRuntime().Articles(r.Context(), wxquery.ArticlesRequest{
+	result, err := h.queryRuntimeFor(target).Articles(r.Context(), wxquery.ArticlesRequest{
 		Username:  strings.TrimSpace(q.Get("username")),
 		Query:     strings.TrimSpace(q.Get("query")),
 		Date:      q.Get("date"),
@@ -695,6 +711,7 @@ func (h *handler) handleArticles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	meta := h.listMeta(info, "articles")
+	meta.Coverage = result.Coverage
 	meta.Timezone = wxquery.LocalTimezoneName()
 	meta.Limit = intPtr(limit)
 	meta.Offset = intPtr(offset)
@@ -725,13 +742,13 @@ func (h *handler) handleSNSFeed(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_offset", err.Error())
 		return
 	}
-	_, _, info, err := h.resolveAccount(r.Context(), false)
+	target, _, info, err := h.resolveAccount(r.Context(), false)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "account_discovery_failed", err.Error())
 		return
 	}
 	query := strings.TrimSpace(q.Get("query"))
-	result, err := h.queryRuntime().SNSFeed(r.Context(), wxquery.SNSFeedRequest{
+	result, err := h.queryRuntimeFor(target).SNSFeed(r.Context(), wxquery.SNSFeedRequest{
 		Username:  strings.TrimSpace(q.Get("username")),
 		Query:     query,
 		Date:      q.Get("date"),
@@ -751,6 +768,7 @@ func (h *handler) handleSNSFeed(w http.ResponseWriter, r *http.Request) {
 		resource = "sns.search"
 	}
 	meta := h.listMeta(info, resource)
+	meta.Coverage = result.Coverage
 	meta.Timezone = wxquery.LocalTimezoneName()
 	meta.Limit = intPtr(limit)
 	meta.Offset = intPtr(offset)
@@ -786,12 +804,12 @@ func (h *handler) handleSNSNotifications(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, "invalid_include_read", err.Error())
 		return
 	}
-	_, _, info, err := h.resolveAccount(r.Context(), false)
+	target, _, info, err := h.resolveAccount(r.Context(), false)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "account_discovery_failed", err.Error())
 		return
 	}
-	result, err := h.queryRuntime().SNSNotifications(r.Context(), wxquery.SNSNotificationsRequest{
+	result, err := h.queryRuntimeFor(target).SNSNotifications(r.Context(), wxquery.SNSNotificationsRequest{
 		Date:        q.Get("date"),
 		StartText:   q.Get("start"),
 		EndText:     q.Get("end"),
@@ -806,6 +824,7 @@ func (h *handler) handleSNSNotifications(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	meta := h.listMeta(info, "sns.notifications")
+	meta.Coverage = result.Coverage
 	meta.Timezone = wxquery.LocalTimezoneName()
 	meta.Limit = intPtr(limit)
 	meta.Offset = intPtr(offset)

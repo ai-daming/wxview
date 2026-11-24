@@ -29,23 +29,24 @@ type resourceMediaRow struct {
 	RelativePath string `json:"relative_path"`
 }
 
-func queryResourceMedia(dbPaths []string, dataDir string, mediaType string, keys []string) []resourceMediaFile {
+func queryResourceMedia(ctx context.Context, dbPaths []string, dataDir string, mediaType string, keys []string) []resourceMediaFile {
 	keys = cleanMediaKeys(keys)
 	if len(keys) == 0 {
 		return nil
 	}
 	var out []resourceMediaFile
 	for _, dbPath := range dbPaths {
+		sqlitedb.ObserveRead(ctx, dbPath)
 		if _, err := os.Stat(dbPath); err != nil {
 			continue
 		}
-		out = append(out, queryHardlinkMedia(dbPath, dataDir, mediaType, keys)...)
-		out = append(out, queryHlinkMedia(dbPath, dataDir, keys)...)
+		out = append(out, queryHardlinkMedia(ctx, dbPath, dataDir, mediaType, keys)...)
+		out = append(out, queryHlinkMedia(ctx, dbPath, dataDir, keys)...)
 	}
 	return dedupeResourceFiles(out)
 }
 
-func queryHardlinkMedia(dbPath string, dataDir string, mediaType string, keys []string) []resourceMediaFile {
+func queryHardlinkMedia(ctx context.Context, dbPath string, dataDir string, mediaType string, keys []string) []resourceMediaFile {
 	tablePrefix := ""
 	switch mediaType {
 	case "image":
@@ -75,7 +76,7 @@ LEFT JOIN dir2id d1 ON d1.rowid = f.dir1
 LEFT JOIN dir2id d2 ON d2.rowid = f.dir2
 WHERE %s;
 `, sqlitedb.QuoteIdent(table), condition)
-		rows := queryResourceRows(dbPath, query, args...)
+		rows := queryResourceRows(ctx, dbPath, query, args...)
 		for _, row := range rows {
 			path := hardlinkPath(accountBase, mediaType, row)
 			if path == "" {
@@ -93,7 +94,7 @@ WHERE %s;
 	return out
 }
 
-func queryHlinkMedia(dbPath string, dataDir string, keys []string) []resourceMediaFile {
+func queryHlinkMedia(ctx context.Context, dbPath string, dataDir string, keys []string) []resourceMediaFile {
 	accountBase := filepath.Dir(dataDir)
 	condition, args := resourceKeyCondition(keys, "r.mediaMd5", "d.fileName")
 	query := fmt.Sprintf(`
@@ -109,7 +110,7 @@ FROM HlinkMediaRecord r
 JOIN HlinkMediaDetail d ON r.inodeNumber = d.inodeNumber
 WHERE %s;
 `, condition)
-	rows := queryResourceRows(dbPath, query, args...)
+	rows := queryResourceRows(ctx, dbPath, query, args...)
 	out := make([]resourceMediaFile, 0, len(rows))
 	for _, row := range rows {
 		if row.RelativePath == "" || row.Name == "" {
@@ -126,8 +127,8 @@ WHERE %s;
 	return out
 }
 
-func queryResourceRows(dbPath string, query string, args ...any) []resourceMediaRow {
-	db, err := sqlitedb.OpenReadOnly(context.Background(), dbPath)
+func queryResourceRows(ctx context.Context, dbPath string, query string, args ...any) []resourceMediaRow {
+	db, err := sqlitedb.OpenReadOnly(ctx, dbPath)
 	if err != nil {
 		return nil
 	}

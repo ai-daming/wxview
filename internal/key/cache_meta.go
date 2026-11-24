@@ -22,6 +22,8 @@ type cacheMetadata struct {
 }
 
 type cacheMetadataEntry struct {
+	CacheSize       int64     `json:"cache_size,omitempty"`
+	CacheMTimeNS    int64     `json:"cache_mtime_ns,omitempty"`
 	SnapshotVersion int       `json:"snapshot_version,omitempty"`
 	WALPresent      bool      `json:"wal_present,omitempty"`
 	WALSize         int64     `json:"wal_size,omitempty"`
@@ -68,10 +70,14 @@ func isCacheFresh(target TargetDB, cachePath string, sourceSalt string) (bool, e
 	if !strings.EqualFold(entry.SourceSalt, sourceSalt) {
 		return false, nil
 	}
-	return entry.SnapshotVersion == 1 && entry.sourceSignature() == current, nil
+	info, err := os.Stat(cachePath)
+	if err != nil {
+		return false, err
+	}
+	return entry.SnapshotVersion == 1 && entry.sourceSignature() == current && entry.CacheSize == info.Size() && entry.CacheMTimeNS == info.ModTime().UnixNano(), nil
 }
 
-func updateCacheMetadata(target TargetDB, cachePath string, sourceSalt string, sig sourceSignature) error {
+func updateCacheMetadata(target TargetDB, cachePath string, sourceSalt string, sig sourceSignature, revision decrypt.CacheRevision) error {
 	metaPath, err := CacheMetaPath(target.Account)
 	if err != nil {
 		return err
@@ -85,6 +91,7 @@ func updateCacheMetadata(target TargetDB, cachePath string, sourceSalt string, s
 	}
 	meta.Version = 1
 	meta.Files[target.DBRelPath] = cacheMetadataEntry{
+		CacheSize: revision.Size, CacheMTimeNS: revision.MTimeNS,
 		SnapshotVersion: 1, WALPresent: sig.WALPresent, WALSize: sig.WALSize, WALMTimeNS: sig.WALMTimeNS, WALHeader: sig.WALHeader,
 		SourcePath:    target.DBPath,
 		SourceSize:    sig.Size,
