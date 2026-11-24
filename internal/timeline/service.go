@@ -152,14 +152,6 @@ func DecodeCursor(token string, queryHash string) (SortKey, error) {
 	return payload.After, nil
 }
 
-func EncodeCursor(queryHash string, after SortKey) (string, error) {
-	return encodeCursor(cursorPayload{
-		Version:   cursorVersion,
-		QueryHash: queryHash,
-		After:     after,
-	})
-}
-
 func filterAfter(list []messages.Message, after SortKey) []messages.Message {
 	out := make([]messages.Message, 0, len(list))
 	for _, msg := range list {

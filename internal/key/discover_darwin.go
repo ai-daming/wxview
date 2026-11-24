@@ -23,12 +23,6 @@ const favoriteRelPath = "favorite/favorite.db"
 const snsRelPath = "sns/sns.db"
 const headImageRelPath = "head_image/head_image.db"
 
-var messageAuxRelPaths = []string{
-	"message/message_fts.db",
-	"message/message_resource.db",
-	"message/message_revoke.db",
-}
-
 type TargetDB struct {
 	Account   string
 	DataDir   string

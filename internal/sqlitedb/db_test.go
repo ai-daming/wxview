@@ -51,31 +51,3 @@ func TestOpenReadWriteUsesWAL(t *testing.T) {
 		t.Fatalf("journal_mode = %q, want wal", mode)
 	}
 }
-
-func TestOpenReadOnlyLiveReadsWritableDB(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "live.db")
-	db, err := OpenReadWrite(ctx, path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := ExecScript(ctx, db, "CREATE TABLE t(id INTEGER PRIMARY KEY, name TEXT); INSERT INTO t(name) VALUES ('a');"); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	ro, err := OpenReadOnlyLive(ctx, path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer ro.Close()
-	var name string
-	if err := ro.QueryRowContext(ctx, "SELECT name FROM t WHERE id = 1;").Scan(&name); err != nil {
-		t.Fatal(err)
-	}
-	if name != "a" {
-		t.Fatalf("name = %q, want a", name)
-	}
-}

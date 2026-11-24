@@ -74,38 +74,6 @@ INSERT INTO SessionAbstract(m_nsUserName, m_uUnReadCount, m_uLastTime) VALUES ('
 	}
 }
 
-func TestIndexHintsFromSessionTable(t *testing.T) {
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "session.db")
-	sql := `
-CREATE TABLE SessionTable(
-  username TEXT,
-  unread_count INTEGER,
-  summary BLOB,
-  last_timestamp INTEGER,
-  last_msg_type INTEGER,
-  last_msg_sender TEXT,
-  last_sender_display_name TEXT
-);
-INSERT INTO SessionTable(username, unread_count, summary, last_timestamp, last_msg_type, last_msg_sender, last_sender_display_name)
-VALUES ('wxid_a', 1, X'68656C6C6F', 1700000200, 1, '', '');
-INSERT INTO SessionTable(username, unread_count, summary, last_timestamp, last_msg_type, last_msg_sender, last_sender_display_name)
-VALUES ('wxid_b', 0, X'776F726C64', 1700000100, 1, '', '');
-`
-	runSQLite(t, dbPath, sql)
-
-	got, err := NewService(dbPath).IndexHints(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != 2 {
-		t.Fatalf("got %d hints, want 2", len(got))
-	}
-	if got[0].Username != "wxid_a" || got[0].TableName != messages.TableName("wxid_a") || got[0].LastTimestamp != 1700000200 {
-		t.Fatalf("unexpected first hint: %+v", got[0])
-	}
-}
-
 func runSQLite(t *testing.T, path string, sql string) {
 	t.Helper()
 	db := sqlitetest.CreateDB(t, path, sql)

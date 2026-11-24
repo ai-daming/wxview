@@ -11,20 +11,18 @@ Wxview 和 WeChat CLI / wx-cli 属于同一类工具：从你自己电脑上的�
 可交给 AI 使用的本地数据源。
 
 Wxview 的重点是清楚的本地缓存边界和稳定的机器输出：`init` 负责一次性准备 key，
-`daemon start` 负责持续解密缓存和维护消息索引，查询命令和 `api start` / `api serve` 直接读取
-本地 cache / index。
+`daemon start` 负责持续刷新解密缓存，查询命令和 `api start` / `api serve` 直接读取本地解密缓存。
 
 ## 核心特点
 
-- **本地优先**：微信数据、数据库 key、解密缓存和消息索引都保存在本机 `~/.wxview/`。
-- **常驻维护**：`wxview daemon start` 持续刷新解密缓存，并后台生成/更新消息索引。
+- **本地优先**：数据库 key 和解密缓存保存在本机 `~/.wxview/`。
+- **常驻维护**：`wxview daemon start` 持续刷新解密缓存。
 - **AI 友好**：支持 `json`、`jsonl`、`csv` 和 `table` 输出；`messages` / `timeline` 的 JSON 输出带 `meta.next_args`，方便可靠分页。
 - **读取状态**：源码的消息 JSON 与 WebAPI 在 `meta.data_coverage` 中报告本次依赖缓存的新鲜度、成功采集时间和已知缺口，详见[查询覆盖说明](docs/query-coverage.md)。
 - **身份清楚**：`wxview me` 和 WebAPI `GET /v1/me` 会返回当前账号身份，方便区分多个本地实例。
 - **跨会话读取**：既能按明确 `username` 查询单个聊天，也能按联系人筛选条件合并成全局时间线。
 - **本地 WebAPI**：`wxview api start` 提供 HTTP 数据接口，默认只监听本机；显式 `--addr` 可监听局域网地址。GET 查询只读，POST 用于本地 cache/new-messages action；`api serve` 用于前台调试。
 - **媒体可用**：图片、视频、文件和语音在支持缓存可用时会自动解析成本地可打开路径；语音会内置解码为 WAV，不要求系统安装 ffmpeg。
-- **可删除索引**：消息索引是派生加速层，可以删除重建，不改变源微信库和解密缓存。
 
 ## 支持范围
 
@@ -139,11 +137,10 @@ Windows 需要在管理员终端运行：
 ./bin/wxview daemon start
 ```
 
-`daemon start` 会在后台持续做三件事：
+`daemon start` 会在后台持续做两件事：
 
 1. 使用 `init` 准备好的 key 刷新本地解密缓存。
 2. 监听联系人、会话、消息、媒体、头像、收藏和 SNS 数据库变化。
-3. 后台维护 `~/.wxview/cache/<account>/index/messages.db` 消息索引。
 
 `daemon start` 需要在终端交互确认（`y/N`，默认拒绝）才会真正启动后台进程；
 非交互调用（脚本、AI agent、管道输入）会被直接拒绝。没有 `--yes` 之类的旁路
@@ -160,7 +157,6 @@ macOS 活跃账号探测失败时暂停本轮刷新，20 秒后重试，不回�
 ```sh
 ./bin/wxview daemon status
 ./bin/wxview cache status --format table
-./bin/wxview index status
 ```
 
 停止后台服务：
@@ -236,17 +232,15 @@ sudo ./bin/wxview init
 | --- | --- | --- |
 | 构建 | `task build` | 生成 `./bin/wxview` |
 | 初始化 | `wxview init` | 找账号、提取/验证 DB key、写入 `keys.json` |
-| 常驻维护 | `wxview daemon start` | 持续解密缓存，维护 message index |
-| 状态检查 | `daemon status` / `cache status` / `index status` | 看 daemon、cache、index 是否健康 |
-| 查询 | `sessions` / `contacts` / `messages` / `timeline` / `search` | 直接读取本地 cache / index |
+| 常驻维护 | `wxview daemon start` | 持续刷新解密缓存 |
+| 状态检查 | `daemon status` / `cache status` | 查看 daemon 与缓存状态 |
+| 查询 | `sessions` / `contacts` / `messages` / `timeline` / `search` | 直接读取本地解密缓存 |
 | WebAPI | `wxview api start` | HTTP 数据接口，默认只监听本机 |
 
 不要把 `init` 当成常驻服务。`init` 是一次性准备动作；`daemon start` 才是让 Wxview
 在日常使用中持续接近实时的入口。
 
-查询命令不会把 daemon 当查询服务。daemon 只负责后台刷新缓存和索引；`contacts`、
-`sessions`、`messages`、`timeline`、`search` 等命令始终直接读取本地解密 cache
-或派生 index。
+daemon 负责后台刷新缓存。`contacts`、`sessions`、`messages`、`timeline`、`search` 等命令直接读取本地解密缓存。
 
 实现上，CLI flags 和 HTTP params 只是不同入口；contacts、sessions、messages、
 timeline、search、favorites、articles、sns、new-messages 和 cache refresh 的查询编排
@@ -291,9 +285,9 @@ V1 不做异步 job。宽查询和本地媒体读取仍是同步 HTTP 请求，�
 | `GET /v1/members` | `username` 或 `query` |
 | `GET /v1/sessions` | `kind`、`query`、`limit`、`offset` |
 | `GET /v1/unread` | `kind`、`query`、`limit`、`offset` |
-| `GET /v1/messages` | `username`、`date`、`start`、`end`、`order`、`cursor`、`after_seq`、`limit`、`offset`、`source`、`no_index` |
+| `GET /v1/messages` | `username`、`date`、`start`、`end`、`order`、`cursor`、`after_seq`、`limit`、`offset`、`source` |
 | `GET /v1/search` | `query`、`kind`、`chat_query`、`username`、`date`、`start`、`end`、`limit`、`offset`、`source` |
-| `GET /v1/timeline` | `username` 或 `kind/query`，再加 `date` 或 `start/end`、`limit`、`cursor`、`source`、`no_index` |
+| `GET /v1/timeline` | `username` 或 `kind/query`，再加 `date` 或 `start/end`、`limit`、`cursor`、`source` |
 | `GET /v1/new-messages` | `limit`、`source`；只预览，不推进 checkpoint |
 | `GET /v1/favorites` | `type`、`query`、`limit`、`offset` |
 | `GET /v1/articles/accounts` | `query` |
@@ -370,16 +364,13 @@ curl -X POST http://127.0.0.1:38765/v1/cache/refresh
 | --- | --- |
 | `wxview init` | 首次设置：检测微信、提取并验证支持数据库 key |
 | `wxview me` | 查看当前 Wxview 会读取的微信账号身份 |
-| `wxview daemon start` | 启动后台缓存刷新和索引维护 |
+| `wxview daemon start` | 启动后台缓存刷新 |
 | `wxview daemon status` | 检查 daemon 是否响应 health |
 | `wxview api start` | 后台启动 WebAPI，默认只监听本机 |
 | `wxview api status` | 查看单个托管 WebAPI 实例状态 |
 | `wxview api stop` | 停止单个托管 WebAPI 实例 |
 | `wxview cache status` | 查看解密缓存 freshness 和 key 覆盖 |
 | `wxview cache clean-tmp` | 清理解密 cache 层过期临时文件 |
-| `wxview index status` | 查看消息索引是否 missing/building/ready/stale |
-| `wxview index refresh` | 手动刷新或续跑消息索引 |
-| `wxview index clean-tmp` | 清理 index 层旧临时文件 |
 | `wxview contacts` | 查询联系人、群、公众号等联系人表记录 |
 | `wxview members` | 查询群成员和群主 |
 | `wxview sessions` | 查询最近会话 |
@@ -397,7 +388,6 @@ curl -X POST http://127.0.0.1:38765/v1/cache/refresh
 ```sh
 ./bin/wxview messages --help
 ./bin/wxview timeline --help
-./bin/wxview index --help
 ```
 
 ## 输出格式
@@ -451,7 +441,7 @@ JSON 输出使用 `{meta, items}` envelope：
 Unix 秒边界，不延续 `today` 等相对日期。起止均包含边界，日期按本地日历解释。
 固定 end 不是快照：新增消息若在 end 之后不会出现；回填在游标之后的排序区间可能出现，
 回填在已翻过的区间不会补发；删除会缩短后续结果。缓存刷新保留源分片名和 local_id 时可续页，
-若迁移重建改变行身份，应重新开始。索引失效回退扫描仍使用相同游标语义。
+若迁移重建改变行身份，应重新开始。
 
 新分页普通浏览只读取已有缓存；缺缓存会提示初始化/刷新，不隐式获取密钥。
 显式 `--refresh` 仍执行刷新。扫描路径每个分片最多取 `limit + 1` 条候选，逐分片有界合并，
@@ -482,7 +472,6 @@ Wxview 的本地状态默认在：
 | 联系人缓存 | `~/.wxview/cache/<account>/contact/contact.db` |
 | 会话缓存 | `~/.wxview/cache/<account>/session/session.db` |
 | 消息缓存 | `~/.wxview/cache/<account>/message/message_*.db` |
-| 消息索引 | `~/.wxview/cache/<account>/index/messages.db` |
 | 媒体缓存 | `~/.wxview/cache/<account>/media/` |
 | 增量消息状态 | `~/.wxview/cache/<account>/state/new_messages.json` |
 | 刷新元数据 | `~/.wxview/cache/<account>/mtime.json` |
@@ -500,13 +489,7 @@ daemon 是内部缓存维护服务，不是 WebAPI。WebAPI 由 `wxview api star
 - 已有 WebAPI 实例运行时，再执行 `wxview api start` 或 `wxview api serve --addr 其他端口` 会报错。
 - 源码的缓存刷新会读取主库和已提交 WAL；只写 Wxview 缓存，不修改微信文件。采集不稳定或校验失败时保留旧缓存，详见 [WAL 快照](docs/wal-snapshots.md)。
 
-消息索引用来加速 `messages` 和 `timeline`：
-
-- `ready` 且准实时：优先走索引。
-- `missing`、`building`、`schema_mismatch`、过度 `stale`：自动回落到直接扫描解密缓存。
-- `--no-index` 可以强制走扫描路径，便于对照排查。
-- WAL 快照缓存更新后，旧索引先回落到扫描；索引追上该缓存版本后恢复加速。
-- `index rebuild --reset` 会删除并重建派生索引，不影响源微信库和解密缓存。
+`messages`、`timeline` 和 `search` 直接读取解密消息分片。
 
 ## 权限和安全
 
@@ -535,8 +518,9 @@ daemon 是内部缓存维护服务，不是 WebAPI。WebAPI 由 `wxview api star
   可继续读取，回退不需要迁移缓存。
 
 已知 FTS 限制：微信的 contact/favorite/message FTS 索引使用私有 `MMFtsTokenizer`，普通 SQLite 的
-全文匹配与全库完整性检查可能报错。Wxview 的联系人、收藏、消息搜索读取正文或自己的派生索引，
-不直接查询这些微信 FTS 索引；不能据此认定密钥错误。媒体和业务验收范围见升级清单。
+全文匹配与全库完整性检查可能报错。Wxview 的联系人、收藏、消息搜索读取解密缓存。
+`MMFtsTokenizer` 缺失是分词器兼容问题。Wxview 默认跳过 `message/message_fts.db` 的取钥、监听和
+缓存刷新，`wxview search` 从数字编号消息分片搜索正文和解析字段。媒体和业务验收范围见升级清单。
 
 Python helper 随二进制内嵌，不依赖项目源码或外部脚本下载。算法参考
 [DaneelOlivaw1/macos-wechat-export](https://github.com/DaneelOlivaw1/macos-wechat-export)

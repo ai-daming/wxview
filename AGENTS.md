@@ -100,7 +100,7 @@ paths automatically when the supporting caches are available.
 - CLI and WebAPI query paths should share `internal/query` use-case logic.
   `cmd/wxview` owns flags, help, CLI JSON/table/csv/jsonl formatting, and
   `internal/webapi` owns HTTP params, HTTP meta/envelopes, and error responses.
-  Do not duplicate time parsing, index fallback, chat metadata enrichment,
+  Do not duplicate time parsing, chat metadata enrichment,
   media enrichment, new-message checkpoint, or daemon-first refresh fallback
   in either presentation layer.
 - `wxview messages` requires `--username`; without args it must show the same
@@ -110,8 +110,7 @@ paths automatically when the supporting caches are available.
 - Existing message CLI JSON envelopes and WebAPI data envelopes add
   `meta.data_coverage` from the shared query layer. Describe only this query's
   local cache dependencies, their bound successful capture times and observed
-  fresh/stale/missing/unknown states; keep source freshness separate from index
-  usability. Cache/index changes during a query must be unknown, not a later
+  fresh/stale/missing/unknown states. Cache changes during a query must be unknown, not a later
   snapshot presented as the one read. No implicit refresh, key scan or new
   background tasks for metadata. Preserve existing required-source errors,
   item schemas, pagination and item-only/legacy non-envelope output contracts.
@@ -127,7 +126,7 @@ paths automatically when the supporting caches are available.
   Reject explicit offset/after-seq combinations. Preserve the legacy defaults
   and next_after_seq for callers without order/cursor.
 - Stable message order is (create_time, seq, local_id, source_db), all ascending
-  or all descending. Share this key across index/scan and cursor comparisons.
+  or all descending. Share this key across shard reads and cursor comparisons.
   Push candidate limits into SQL, bound merging, and normalize only the final
   page. Do not claim LIMIT prevents SQLite scans without checking query plans.
 - Message cursors bind account/data-directory identity, username, direction and
@@ -135,12 +134,9 @@ paths automatically when the supporting caches are available.
   carry fixed Unix seconds. No snapshot guarantee across cache refreshes.
   Ordinary stable-pagination reads must not initialize missing caches.
 - Resolve account once per message query and reuse it for cache paths, metadata,
-  media and index freshness. HTTP envelope identity must use this same account.
-- V1 maintains a derived local message index when available. `messages` may use
-  it as a fast path when the index is ready, covers the chat, and is either
-  globally near-real-time or chat-level fresh according to `session/session.db`.
-  It must fall back to direct decrypted message-cache scanning when the index is
-  missing, building, incompatible, or stale for the requested chat.
+  and media. HTTP envelope identity must use this same account.
+- Read message rows directly from the decrypted message shards. Wxview does
+  not build or maintain a derived message index.
 - `--start` and `--end` are inclusive. Date-only `--end` includes the full day.
 - `messages --date today|yesterday|YYYY-MM-DD` selects one local calendar day
   and is mutually exclusive with `--start`/`--end`.
@@ -154,9 +150,8 @@ paths automatically when the supporting caches are available.
   cross-conversation time range. It supports `--format table|json|jsonl|csv`,
   `--kind all|friend|chatroom|other`, `--query`, `--username`, `--date`,
   `--start`, `--end`, `--limit`, `--cursor`, `--source`, and `--refresh`.
-- `timeline` may use the derived message index only when it covers every
-  selected conversation and each selected chat is fresh enough. Otherwise it
-  fans out across selected conversations and message shards, merges results
+- `timeline` reads selected conversations across decrypted message shards,
+  merges results
   in-process, then applies the global limit. Broad selectors or wide date ranges
   can be very slow; prefer narrow selectors and small time windows in examples
   and AI/tool usage.
@@ -176,19 +171,14 @@ paths automatically when the supporting caches are available.
   filter, not the number of conversations that have returned messages on the
   current page or within the requested time range.
 - `wxview search` searches message content and parsed `content_detail` values.
-  The initial implementation is a local scan over selected conversations; future
-  FTS/index work should be treated as an accelerator, not as part of the item
-  schema contract. JSON output uses the same `{meta, items}` envelope and message
+  It scans local message shards for the selected conversations.
+  JSON output uses the same `{meta, items}` envelope and message
   item schema as `messages` and `timeline`.
 - `wxview sessions`, `wxview unread`, and `wxview new-messages` read
   `session/session.db` directly from the local decrypted cache. `new-messages`
   keeps account-scoped state under `~/.wxview/cache/<account>/state/`.
-- Future performance work should be documented as optional TODOs unless the
-  product direction explicitly changes. Likely directions are SQL pagination
-  pushdown for scan fallbacks, `timeline --explain` / dry-run estimation,
-  better reconcile scheduling, and batched timeline fan-out with stable cursor
-  semantics. FTS should remain mainly a `search` accelerator; `messages` and
-  `timeline` rely on ordinary chat/time index rows for correctness and speed.
+- Future performance work can consider batched timeline reads with stable
+  cursor semantics.
 - Message `items` from `messages`, `timeline`, `search`, and `new-messages` must
   share the same schema.
   Include chat metadata fields `chat_kind`, `chat_display_name`, `chat_alias`,
@@ -320,24 +310,23 @@ product goal.
   Persist the signature actually captured,
   not a later source observation. Old entries require one refresh. Skip
   decrypting only when the complete signature matches and the cache exists.
-  A changed snapshot cache invalidates the old message index immediately;
-  resume index queries only after it catches up.
 - Daemon watchers share an account/path snapshot: account probes every 20s,
   shard discovery every 5s and known-file stats every 1s. Coalesce concurrent
   expiry and failed probes. macOS requires positive open-file account evidence;
   failed probes must not switch accounts via mtime fallback.
 - Watch DB, WAL and rollback-journal paths even before sidecar files exist;
   WAL-only writes must trigger refresh without new account discovery.
-- Serialize daemon cache refresh writes, including index preparation. Long
+- Serialize daemon cache refresh writes. Long
   watcher callbacks coalesce new triggers into at most one pending callback.
   Account switch detection is bounded by probe latency, not one second.
 - Supported message-related DBs include numeric正文分片
   `message/message_[number].db` plus `message/biz_message_[number].db`,
-  `message/media_[number].db`, `message/message_fts.db`,
-  `message/message_resource.db`, and `message/message_revoke.db`.
+  `message/media_[number].db`, `message/message_resource.db`, and
+  `message/message_revoke.db`. Leave WeChat's `message/message_fts.db` out of
+  default key discovery, watching, and cache refresh.
 - Required DB keys are `contact/contact.db` plus numeric message shards.
   `session/session.db`, `head_image/head_image.db`, `message/media_*.db`,
-  `message_fts.db`, `message_resource.db`, and `message_revoke.db` are
+  `message_resource.db` and `message_revoke.db` are
   auxiliary/optional and should not block init/cache refresh when their key is
   not yet present in WeChat process memory.
 - Use readable account directory names, not base64, unless a future account name
@@ -347,7 +336,7 @@ product goal.
 
 ## SQLite and Decryption Notes
 
-- SQLite cache validation, cache querying, and derived index writes use
+- SQLite cache validation and cache querying use
   `database/sql` with the CGO-free `modernc.org/sqlite` driver. Normal wxview
   usage does not require an external SQLite command-line tool.
 - Open decrypted cache DBs with an immutable read-only URI:

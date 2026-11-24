@@ -569,26 +569,6 @@ func TestCacheHelpIsActionable(t *testing.T) {
 	}
 }
 
-func TestIndexHelpExplainsRefreshResetAndLag(t *testing.T) {
-	var out bytes.Buffer
-	if err := run([]string{"index", "--help"}, &out, &out); err != nil {
-		t.Fatal(err)
-	}
-	text := out.String()
-	for _, want := range []string{
-		"wxview index - Inspect and maintain the derived message index",
-		"wxview index refresh",
-		"wxview index rebuild --reset",
-		"wxview index clean-tmp",
-		"ready and near-realtime",
-		"Lag up to 60 seconds",
-	} {
-		if !strings.Contains(text, want) {
-			t.Fatalf("index help missing %q:\n%s", want, text)
-		}
-	}
-}
-
 func TestCacheWithoutArgsShowsHelp(t *testing.T) {
 	var out bytes.Buffer
 	if err := run([]string{"cache"}, &out, &out); err != nil {
@@ -788,5 +768,14 @@ func TestInitCaptureOutputUsesCapturedStatus(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "must-not-print") || strings.Contains(out.String(), "keys_scanned") {
 		t.Fatal("capture summary leaked key or used wrong source")
+	}
+}
+
+func TestIndexCommandRemoved(t *testing.T) {
+	var out bytes.Buffer
+	for _, subcommand := range []string{"status", "refresh", "rebuild", "clean-tmp"} {
+		if err := run([]string{"index", subcommand}, &out, &out); err == nil || !strings.Contains(err.Error(), "unknown command") {
+			t.Fatalf("index %s should be unavailable, got %v", subcommand, err)
+		}
 	}
 }

@@ -144,8 +144,21 @@ func TestWatchPathsDetectWALOnlyChangesWithoutNewDiscovery(t *testing.T) {
 	if err := os.WriteFile(source, nil, 0600); err != nil {
 		t.Fatal(err)
 	}
+	fts := filepath.Join(root, "message", "message_fts.db")
+	if err := os.WriteFile(fts, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
 	s := Server{}
 	s.discovery.discover = func() (key.TargetDB, error) { return account, nil }
+	beforeFTS := statFileSet(s.watchPaths("messages"))
+	for _, path := range []string{fts, fts + "-wal", fts + "-journal"} {
+		if err := os.WriteFile(path, []byte("FTS update"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if statFileSet(s.watchPaths("messages")) != beforeFTS {
+		t.Fatal("WeChat message FTS update changed the message watcher signature")
+	}
 	for _, kind := range []string{"messages", "contact/contact.db", "session/session.db", "favorite/favorite.db", "sns/sns.db"} {
 		paths := s.watchPaths(kind)
 		before := statFileSet(paths)

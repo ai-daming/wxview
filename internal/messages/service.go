@@ -101,18 +101,6 @@ type SearchOptions struct {
 	Offset        int
 }
 
-type RowRef struct {
-	SourceDB     string `json:"source_db"`
-	TableName    string `json:"table_name"`
-	ChatUsername string `json:"chat_username"`
-	LocalID      int64  `json:"local_id"`
-}
-
-type RefQueryOptions struct {
-	IncludeSource bool
-	MediaResolver *media.Resolver
-}
-
 type Service struct {
 	CacheDBs []string
 }
@@ -194,54 +182,6 @@ func (s Service) List(ctx context.Context, opts QueryOptions) ([]Message, error)
 	return page, nil
 }
 
-func (s Service) ListByRefs(ctx context.Context, refs []RowRef, opts RefQueryOptions) ([]Message, error) {
-	if len(refs) == 0 {
-		return []Message{}, nil
-	}
-	dbBySource := make(map[string]string, len(s.CacheDBs))
-	for _, dbPath := range s.CacheDBs {
-		dbBySource[filepath.Base(dbPath)] = dbPath
-	}
-	type groupKey struct {
-		sourceDB  string
-		tableName string
-	}
-	idsByGroup := make(map[groupKey][]int64)
-	for _, ref := range refs {
-		dbPath := dbBySource[ref.SourceDB]
-		if dbPath == "" {
-			return nil, fmt.Errorf("indexed source DB is not in current message caches: %s", ref.SourceDB)
-		}
-		key := groupKey{sourceDB: ref.SourceDB, tableName: ref.TableName}
-		idsByGroup[key] = append(idsByGroup[key], ref.LocalID)
-	}
-
-	rowsByRef := make(map[string]queryRow, len(refs))
-	for key, ids := range idsByGroup {
-		dbPath := dbBySource[key.sourceDB]
-		rows, err := queryRowsByLocalIDs(ctx, dbPath, key.tableName, ids)
-		if err != nil {
-			return nil, err
-		}
-		for _, row := range rows {
-			rowsByRef[refKey(key.sourceDB, key.tableName, row.LocalID)] = row
-		}
-	}
-
-	out := make([]Message, 0, len(refs))
-	for _, ref := range refs {
-		row, ok := rowsByRef[refKey(ref.SourceDB, ref.TableName, ref.LocalID)]
-		if !ok {
-			return nil, fmt.Errorf("indexed message row missing: %s %s local_id=%d", ref.SourceDB, ref.TableName, ref.LocalID)
-		}
-		out = append(out, normalizeRow(ref.ChatUsername, ref.TableName, ref.SourceDB, opts.IncludeSource, row))
-	}
-	if opts.MediaResolver != nil {
-		EnrichMediaDetails(out, opts.MediaResolver)
-	}
-	return out, nil
-}
-
 func (s Service) Search(ctx context.Context, opts SearchOptions) ([]Message, int, error) {
 	needle := strings.ToLower(strings.TrimSpace(opts.Query))
 	if needle == "" {
@@ -321,28 +261,6 @@ func MessageMatches(message Message, needle string) bool {
 		}
 	}
 	return false
-}
-
-func SearchText(chatUsername string, localType int64, status int64, realSenderID int64, senderName string, decodedContent string) string {
-	decodedContent = strings.ToValidUTF8(decodedContent, "")
-	_, _, _, bodyContent := inferSender(chatUsername, status, realSenderID, senderName, decodedContent)
-	msgType, subType := splitLocalType(localType)
-	detail := normalizeContent(msgType, subType, bodyContent).Detail()
-	parts := []string{}
-	if !looksLikeXML(bodyContent) {
-		parts = append(parts, decodedContent)
-	}
-	for _, value := range detail {
-		if strings.TrimSpace(value) != "" {
-			parts = append(parts, value)
-		}
-	}
-	return strings.Join(parts, "\n")
-}
-
-func looksLikeXML(value string) bool {
-	value = strings.TrimSpace(value)
-	return strings.HasPrefix(value, "<") || strings.HasPrefix(value, "<?xml")
 }
 
 func tableExists(ctx context.Context, dbPath string, tableName string) (bool, error) {
@@ -431,30 +349,6 @@ FROM %s
 %s`, sqlitedb.QuoteIdent(tableName), whereSQL)
 }
 
-func queryRowsByLocalIDs(ctx context.Context, dbPath string, tableName string, localIDs []int64) ([]queryRow, error) {
-	if len(localIDs) == 0 {
-		return nil, nil
-	}
-	ids := append([]int64{}, localIDs...)
-	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
-	args := make([]any, 0, len(ids))
-	for _, id := range ids {
-		args = append(args, id)
-	}
-	query := messageRowsQuery(tableName, "WHERE local_id IN ("+sqlitedb.Placeholders(len(ids))+")") + ";"
-	db, err := sqlitedb.OpenReadOnly(ctx, dbPath)
-	if err != nil {
-		return nil, err
-	}
-	defer db.Close()
-	rows, err := db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("query indexed messages in %s table=%s: %w", dbPath, tableName, err)
-	}
-	defer rows.Close()
-	return scanQueryRows(rows)
-}
-
 func scanQueryRows(rows *sql.Rows) ([]queryRow, error) {
 	out := []queryRow{}
 	for rows.Next() {
@@ -475,10 +369,6 @@ func scanQueryRows(rows *sql.Rows) ([]queryRow, error) {
 		out = append(out, row)
 	}
 	return out, rows.Err()
-}
-
-func refKey(sourceDB string, tableName string, localID int64) string {
-	return sourceDB + "\x00" + tableName + "\x00" + strconv.FormatInt(localID, 10)
 }
 
 func normalizeRow(username string, tableName string, sourceDB string, includeSource bool, row queryRow) Message {

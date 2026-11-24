@@ -15,7 +15,7 @@ func TestNextMessageCursorURLFreezesQuery(t *testing.T) {
 		t.Fatal(err)
 	}
 	q := next.Query()
-	for key, want := range map[string]string{"username": "synthetic", "start": "10", "end": "20", "order": "desc", "cursor": "opaque", "limit": "100", "no_index": "true", "source": "true"} {
+	for key, want := range map[string]string{"username": "synthetic", "start": "10", "end": "20", "order": "desc", "cursor": "opaque", "limit": "100", "source": "true"} {
 		if q.Get(key) != want {
 			t.Fatalf("%s=%s want %s", key, q.Get(key), want)
 		}

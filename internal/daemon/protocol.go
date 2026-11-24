@@ -5,7 +5,6 @@ const (
 	ActionRefreshContacts  = "refresh_contacts"
 	ActionRefreshSessions  = "refresh_sessions"
 	ActionRefreshMessages  = "refresh_messages"
-	ActionRefreshIndex     = "refresh_index"
 	ActionRefreshAvatars   = "refresh_avatars"
 	ActionRefreshFavorites = "refresh_favorites"
 	ActionRefreshSNS       = "refresh_sns"

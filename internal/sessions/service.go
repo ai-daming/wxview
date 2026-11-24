@@ -40,12 +40,6 @@ type QueryOptions struct {
 	Offset     int
 }
 
-type IndexHint struct {
-	Username      string
-	TableName     string
-	LastTimestamp int64
-}
-
 type Service struct {
 	CacheDB string
 }
@@ -118,55 +112,6 @@ func (s Service) List(ctx context.Context, opts QueryOptions) ([]Session, error)
 		return out[i].Username < out[j].Username
 	})
 	return paginate(out, opts.Limit, opts.Offset), nil
-}
-
-func (s Service) IndexHints(ctx context.Context) ([]IndexHint, error) {
-	if s.CacheDB == "" {
-		return nil, fmt.Errorf("session cache path is empty")
-	}
-	if _, err := os.Stat(s.CacheDB); err != nil {
-		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("session cache does not exist: run `wxview init` with process-memory permissions and then `wxview sessions --refresh`")
-		}
-		return nil, err
-	}
-	var rows []queryRow
-	if ok, err := tableExists(ctx, s.CacheDB, "SessionTable"); err != nil {
-		return nil, err
-	} else if ok {
-		rows, err = querySessionTable(ctx, s.CacheDB, false)
-		if err != nil {
-			return nil, err
-		}
-	} else if ok, err := tableExists(ctx, s.CacheDB, "SessionAbstract"); err != nil {
-		return nil, err
-	} else if ok {
-		rows, err = querySessionAbstract(ctx, s.CacheDB, false)
-		if err != nil {
-			return nil, err
-		}
-	} else {
-		return nil, fmt.Errorf("session cache has no SessionTable or SessionAbstract table")
-	}
-	out := make([]IndexHint, 0, len(rows))
-	for _, row := range rows {
-		username := strings.TrimSpace(row.Username)
-		if username == "" || row.LastTimestamp <= 0 {
-			continue
-		}
-		out = append(out, IndexHint{
-			Username:      username,
-			TableName:     messages.TableName(username),
-			LastTimestamp: row.LastTimestamp,
-		})
-	}
-	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].LastTimestamp != out[j].LastTimestamp {
-			return out[i].LastTimestamp > out[j].LastTimestamp
-		}
-		return out[i].Username < out[j].Username
-	})
-	return out, nil
 }
 
 func ApplyChatInfo(list []Session, chatInfo map[string]messages.ChatInfo) {

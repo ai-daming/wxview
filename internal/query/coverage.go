@@ -2,14 +2,12 @@ package query
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
-	"wxview/internal/decrypt"
 	"wxview/internal/key"
 	"wxview/internal/sqlitedb"
 )
@@ -37,17 +35,12 @@ type dependencyRead struct {
 	failed      bool
 }
 type readCoverage struct {
-	unresolved     map[string]DataSource
-	mu             sync.Mutex
-	observer       *key.CacheReadObserver
-	account        key.TargetDB
-	contactPath    string
-	reads          map[string]*dependencyRead
-	indexPath      string
-	indexInfo      os.FileInfo
-	indexWALInfo   os.FileInfo
-	indexSignature decrypt.SourceSignature
-	indexErr       error
+	unresolved  map[string]DataSource
+	mu          sync.Mutex
+	observer    *key.CacheReadObserver
+	account     key.TargetDB
+	contactPath string
+	reads       map[string]*dependencyRead
 }
 
 func (rt Runtime) beginRead(ctx context.Context) (Runtime, context.Context, *readCoverage) {
@@ -124,15 +117,6 @@ func (c *readCoverage) observe(path string, required bool) {
 	if path == c.contactPath {
 		rel = "contact/contact.db"
 	}
-	if rel == "index/messages.db" {
-		if c.indexPath == "" {
-			c.indexPath = path
-			c.indexInfo, _ = os.Stat(path)
-			c.indexWALInfo, _ = os.Stat(path + "-wal")
-			c.indexSignature, c.indexErr = decrypt.StatSource(path)
-		}
-		return
-	}
 	if strings.HasPrefix(rel, "../") || !strings.HasSuffix(rel, ".db") {
 		return
 	}
@@ -155,7 +139,7 @@ func (c *readCoverage) observe(path string, required bool) {
 	c.reads[path] = &dependencyRead{observation: c.observer.Observe(key.TargetFor(c.account, rel), path), role: role, required: required}
 }
 
-func (c *readCoverage) finish(indexUsed bool) *DataCoverage {
+func (c *readCoverage) finish() *DataCoverage {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	result := &DataCoverage{Scope: "local_synced_data", Account: c.account.Account, State: "fresh", ObservedAt: time.Now().UTC().Format(time.RFC3339Nano), Sources: []DataSource{}}
@@ -202,19 +186,6 @@ func (c *readCoverage) finish(indexUsed bool) *DataCoverage {
 		result.State = "unknown"
 		result.Reason = "cache_changed_during_query"
 	}
-	if indexUsed && c.indexPath != "" {
-		now, err := os.Stat(c.indexPath)
-		signature, sigErr := decrypt.StatSource(c.indexPath)
-		walInfo, _ := os.Stat(c.indexPath + "-wal")
-		sameWAL := (c.indexWALInfo == nil && walInfo == nil) || sameObservedFile(c.indexWALInfo, walInfo)
-		if err != nil || !sameObservedFile(c.indexInfo, now) || c.indexErr != nil || sigErr != nil || signature != c.indexSignature || !sameWAL {
-			result.State = "unknown"
-			result.Reason = "index_changed_during_query"
-		}
-	}
 	result.ObservedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	return result
-}
-func sameObservedFile(a, b os.FileInfo) bool {
-	return a != nil && b != nil && os.SameFile(a, b) && a.Size() == b.Size() && a.ModTime().Equal(b.ModTime())
 }

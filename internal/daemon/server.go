@@ -16,7 +16,6 @@ import (
 	"wxview/internal/app"
 	"wxview/internal/buildinfo"
 	"wxview/internal/key"
-	"wxview/internal/msgindex"
 )
 
 type Server struct {
@@ -24,15 +23,6 @@ type Server struct {
 	refreshMu  sync.Mutex
 	SocketPath string
 	Shutdown   func()
-
-	mu     sync.Mutex
-	target key.TargetDB
-
-	indexMu sync.Mutex
-
-	indexStateMu sync.Mutex
-	indexRunning bool
-	indexPending bool
 }
 
 func (s *Server) Run(ctx context.Context) error {
@@ -80,10 +70,8 @@ func (s *Server) Run(ctx context.Context) error {
 
 	select {
 	case <-ctx.Done():
-		s.markIndexInterrupted()
 		return nil
 	case err := <-errCh:
-		s.markIndexInterrupted()
 		if errors.Is(err, net.ErrClosed) {
 			return nil
 		}
@@ -122,7 +110,6 @@ func (s *Server) refresh(ctx context.Context) error {
 	if err := s.refreshSessions(ctx); err != nil {
 		log.Printf("refresh session cache skipped: %v", err)
 	}
-	s.refreshIndexBackground(ctx, "startup message cache refresh")
 	if err := s.refreshHeadImage(ctx); err != nil {
 		log.Printf("refresh head_image cache skipped: %v", err)
 	}
@@ -142,14 +129,8 @@ func (s *Server) refreshContact(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	res, _, err := key.EnsureDBCache(ctx, target)
-	if err != nil {
-		return err
-	}
-	s.mu.Lock()
-	s.target = res.Target
-	s.mu.Unlock()
-	return nil
+	_, _, err = key.EnsureDBCache(ctx, target)
+	return err
 }
 
 func (s *Server) refreshMessages(ctx context.Context) error {
@@ -172,89 +153,6 @@ func (s *Server) refreshMessages(ctx context.Context) error {
 		}
 	}
 	return nil
-}
-
-func (s *Server) refreshIndex(ctx context.Context) error {
-	s.refreshMu.Lock()
-	defer s.refreshMu.Unlock()
-	s.indexMu.Lock()
-	defer s.indexMu.Unlock()
-	target, _, err := s.discovery.get()
-	if err != nil {
-		return err
-	}
-	res, contactCache, err := key.EnsureDBCache(ctx, target)
-	if err != nil {
-		return err
-	}
-	messagePaths, err := key.AccountMessageCachePaths(ctx, target, true)
-	if err != nil {
-		return err
-	}
-	sessionPath := ""
-	if _, path, err := key.EnsureDBCache(ctx, key.TargetFor(target, "session/session.db")); err != nil {
-		log.Printf("refresh session cache skipped before index refresh: %v", err)
-	} else {
-		sessionPath = path
-	}
-	_, err = msgindex.Refresh(ctx, msgindex.BuildOptions{
-		Account:           res.Target.Account,
-		ContactCachePath:  contactCache,
-		SessionCachePath:  sessionPath,
-		MessageCachePaths: messagePaths,
-	})
-	return err
-}
-
-func (s *Server) markIndexInterrupted() {
-	s.mu.Lock()
-	account := s.target.Account
-	s.mu.Unlock()
-	if account == "" {
-		target, err := key.DiscoverContactDB()
-		if err != nil {
-			return
-		}
-		account = target.Account
-	}
-	indexPath, err := msgindex.LocalPath(account)
-	if err != nil {
-		return
-	}
-	msgindex.MarkInterrupted(indexPath)
-}
-
-func (s *Server) refreshIndexBackground(ctx context.Context, reason string) {
-	s.indexStateMu.Lock()
-	if s.indexRunning {
-		s.indexPending = true
-		s.indexStateMu.Unlock()
-		log.Printf("message index refresh already running; coalesced request after %s", reason)
-		return
-	}
-	s.indexRunning = true
-	s.indexStateMu.Unlock()
-
-	go func() {
-		currentReason := reason
-		for {
-			if err := s.refreshIndex(ctx); err != nil {
-				log.Printf("message index refresh skipped after %s: %v", currentReason, err)
-			} else {
-				log.Printf("message index refreshed after %s", currentReason)
-			}
-
-			s.indexStateMu.Lock()
-			if !s.indexPending {
-				s.indexRunning = false
-				s.indexStateMu.Unlock()
-				return
-			}
-			s.indexPending = false
-			s.indexStateMu.Unlock()
-			currentReason = "coalesced request"
-		}
-	}()
 }
 
 func (s *Server) refreshSessions(ctx context.Context) error {
@@ -336,7 +234,6 @@ func (s *Server) watchMessages(ctx context.Context) {
 			return
 		}
 		log.Printf("message caches refreshed")
-		s.refreshIndexBackground(ctx, "message cache refresh")
 	})
 }
 
@@ -407,13 +304,6 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 			return
 		}
 		_ = json.NewEncoder(conn).Encode(Response{OK: true, Message: "refreshed"})
-		s.refreshIndexBackground(ctx, "refresh_messages action")
-	case ActionRefreshIndex:
-		if err := s.refreshIndex(ctx); err != nil {
-			_ = json.NewEncoder(conn).Encode(Response{OK: false, Message: err.Error()})
-			return
-		}
-		_ = json.NewEncoder(conn).Encode(Response{OK: true, Message: "refreshed"})
 	case ActionRefreshSessions:
 		if err := s.refreshSessions(ctx); err != nil {
 			_ = json.NewEncoder(conn).Encode(Response{OK: false, Message: err.Error()})
@@ -439,7 +329,6 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 		}
 		_ = json.NewEncoder(conn).Encode(Response{OK: true, Message: "refreshed"})
 	case ActionStop:
-		s.markIndexInterrupted()
 		_ = json.NewEncoder(conn).Encode(Response{OK: true, Message: "stopping"})
 		if s.Shutdown != nil {
 			go s.Shutdown()
