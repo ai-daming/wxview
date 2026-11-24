@@ -71,7 +71,7 @@ func AccountMessageCachePaths(ctx context.Context, account TargetDB, refresh boo
 	}
 	paths := make([]string, 0, len(targets))
 	for _, target := range targets {
-		path, err := CachePath(account.Account, target.DBRelPath)
+		path, err := ReadOnlyCachePath(account.Account, target.DBRelPath)
 		if err != nil {
 			return nil, err
 		}

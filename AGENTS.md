@@ -107,6 +107,14 @@ paths automatically when the supporting caches are available.
   help as `wxview messages --help`. It supports `--format table|json|jsonl|csv`,
   `--date`, `--start`, `--end`, `--after-seq`, `--limit`, `--offset`,
   `--source`, and `--refresh`.
+- Existing message CLI JSON envelopes and WebAPI data envelopes add
+  `meta.data_coverage` from the shared query layer. Describe only this query's
+  local cache dependencies, their bound successful capture times and observed
+  fresh/stale/missing/unknown states; keep source freshness separate from index
+  usability. Cache/index changes during a query must be unknown, not a later
+  snapshot presented as the one read. No implicit refresh, key scan or new
+  background tasks for metadata. Preserve existing required-source errors,
+  item schemas, pagination and item-only/legacy non-envelope output contracts.
 - `wxview messages --format json` returns a `{meta, items}` envelope. `meta`
   includes `schema_version` and `timezone`. Reliable machine pagination should
   follow `meta.next_args` / `meta.next_after_seq`; `--offset` is mainly for
@@ -306,7 +314,10 @@ product goal.
 - Cache refresh metadata path is:
   `~/.wxview/cache/<account>/mtime.json`. It records source DB path, size,
   mtime, salt, cache path, refresh time, snapshot version and WAL presence,
-  size, mtime and header fingerprint. Persist the signature actually captured,
+  size, mtime and header fingerprint, plus the temporary cache size/mtime
+  captured before rename. Old entries without a cache revision are unknown to
+  query coverage and gain a binding on their next explicit/maintenance refresh.
+  Persist the signature actually captured,
   not a later source observation. Old entries require one refresh. Skip
   decrypting only when the complete signature matches and the cache exists.
   A changed snapshot cache invalidates the old message index immediately;

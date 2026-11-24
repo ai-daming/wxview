@@ -55,7 +55,7 @@ func (r Resolver) ResolveFile(chatUsername string, localID int64, createTime int
 
 func (r Resolver) resolveFilePath(chatUsername string, createTime int64, localID int64, hints fileHints) (fileCandidate, bool) {
 	if len(hints.keys) > 0 {
-		files := queryResourceMedia(r.ResourceDBs, r.DataDir, "file", hints.keys)
+		files := queryResourceMedia(r.context(), r.ResourceDBs, r.DataDir, "file", hints.keys)
 		if found, ok := chooseFileCandidate(files, hints, createTime, localID); ok {
 			return found, true
 		}

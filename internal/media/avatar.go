@@ -9,13 +9,17 @@ import (
 )
 
 func ResolveAvatar(headImageDB string, username string, cacheDir string) Info {
+	return ResolveAvatarContext(context.Background(), headImageDB, username, cacheDir)
+}
+
+func ResolveAvatarContext(ctx context.Context, headImageDB string, username string, cacheDir string) Info {
 	if headImageDB == "" || username == "" {
 		return notFound("avatar", "head_image cache or username is empty")
 	}
 	if _, err := os.Stat(headImageDB); err != nil {
 		return notFound("avatar", "head_image cache not found")
 	}
-	db, err := sqlitedb.OpenReadOnly(context.Background(), headImageDB)
+	db, err := sqlitedb.OpenReadOnly(ctx, headImageDB)
 	if err != nil {
 		return notFound("avatar", "local avatar not found in head_image.db")
 	}

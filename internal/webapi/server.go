@@ -65,16 +65,17 @@ type ContactItem struct {
 }
 
 type ContactsMeta struct {
-	SchemaVersion int         `json:"schema_version"`
-	Account       AccountMeta `json:"account"`
-	ServerID      string      `json:"server_id"`
-	Resource      string      `json:"resource"`
-	Limit         int         `json:"limit"`
-	Offset        int         `json:"offset"`
-	Returned      int         `json:"returned"`
-	Total         int         `json:"total"`
-	HasMore       bool        `json:"has_more"`
-	NextURL       string      `json:"next_url,omitempty"`
+	Coverage      *wxquery.DataCoverage `json:"data_coverage,omitempty"`
+	SchemaVersion int                   `json:"schema_version"`
+	Account       AccountMeta           `json:"account"`
+	ServerID      string                `json:"server_id"`
+	Resource      string                `json:"resource"`
+	Limit         int                   `json:"limit"`
+	Offset        int                   `json:"offset"`
+	Returned      int                   `json:"returned"`
+	Total         int                   `json:"total"`
+	HasMore       bool                  `json:"has_more"`
+	NextURL       string                `json:"next_url,omitempty"`
 }
 
 type ContactsResponse struct {
@@ -174,7 +175,7 @@ func NewHandler(opts Options) http.Handler {
 		opts.DiscoverContact = key.DiscoverContactDB
 	}
 	if opts.ContactCachePath == nil {
-		opts.ContactCachePath = key.ContactCachePath
+		opts.ContactCachePath = func(account string) (string, error) { return key.ReadOnlyCachePath(account, "contact/contact.db") }
 	}
 	return &handler{
 		addr:             opts.Addr,
@@ -354,12 +355,12 @@ func (h *handler) handleContacts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, _, info, err := h.resolveAccount(r.Context(), false)
+	target, _, info, err := h.resolveAccount(r.Context(), false)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "account_discovery_failed", err.Error())
 		return
 	}
-	result, err := h.queryRuntime().Contacts(r.Context(), wxquery.ContactsRequest{
+	result, err := h.queryRuntimeFor(target).Contacts(r.Context(), wxquery.ContactsRequest{
 		Kind:      kind,
 		Query:     query.Get("query"),
 		Username:  query.Get("username"),
@@ -375,6 +376,7 @@ func (h *handler) handleContacts(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, ContactsResponse{
 		Meta: ContactsMeta{
+			Coverage:      result.Coverage,
 			SchemaVersion: identity.SchemaVersion,
 			Account:       toAccountMeta(info.Account),
 			ServerID:      h.serverID,

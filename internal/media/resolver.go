@@ -2,6 +2,7 @@ package media
 
 import (
 	"bytes"
+	"context"
 	"crypto/aes"
 	"crypto/md5"
 	"crypto/sha256"
@@ -59,6 +60,7 @@ type Info struct {
 }
 
 type Resolver struct {
+	Context     context.Context
 	DataDir     string
 	CacheDir    string
 	ResourceDBs []string
@@ -1076,4 +1078,11 @@ func contains(values []string, value string) bool {
 		}
 	}
 	return false
+}
+
+func (r Resolver) context() context.Context {
+	if r.Context != nil {
+		return r.Context
+	}
+	return context.Background()
 }

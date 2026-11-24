@@ -19,6 +19,7 @@ Wxview 的重点是清楚的本地缓存边界和稳定的机器输出：`init` 
 - **本地优先**：微信数据、数据库 key、解密缓存和消息索引都保存在本机 `~/.wxview/`。
 - **常驻维护**：`wxview daemon start` 持续刷新解密缓存，并后台生成/更新消息索引。
 - **AI 友好**：支持 `json`、`jsonl`、`csv` 和 `table` 输出；`messages` / `timeline` 的 JSON 输出带 `meta.next_args`，方便可靠分页。
+- **读取状态**：源码的消息 JSON 与 WebAPI 在 `meta.data_coverage` 中报告本次依赖缓存的新鲜度、成功采集时间和已知缺口，详见[查询覆盖说明](docs/query-coverage.md)。
 - **身份清楚**：`wxview me` 和 WebAPI `GET /v1/me` 会返回当前账号身份，方便区分多个本地实例。
 - **跨会话读取**：既能按明确 `username` 查询单个聊天，也能按联系人筛选条件合并成全局时间线。
 - **本地 WebAPI**：`wxview api start` 提供 HTTP 数据接口，默认只监听本机；显式 `--addr` 可监听局域网地址。GET 查询只读，POST 用于本地 cache/new-messages action；`api serve` 用于前台调试。

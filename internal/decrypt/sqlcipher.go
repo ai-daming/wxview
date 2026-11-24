@@ -141,13 +141,37 @@ func DecryptToCache(ctx context.Context, src string, dst string, hexKey string) 
 	return err
 }
 
-// DecryptToCacheWithSignature returns the source version actually captured,
-// rather than a later restat that might describe data we never read.
+// CacheRevision identifies the immutable cache file published by a capture.
+type CacheRevision struct {
+	Size    int64 `json:"size"`
+	MTimeNS int64 `json:"mtime_ns"`
+}
+
+// DecryptToCacheWithSignature returns the source version actually captured.
 func DecryptToCacheWithSignature(ctx context.Context, src, dst, hexKey string) (SourceSignature, error) {
+	source, _, err := DecryptToCacheSnapshot(ctx, src, dst, hexKey)
+	return source, err
+}
+
+// DecryptToCacheSnapshot binds the source to the temporary cache revision before
+// rename. A later stat of dst could belong to a concurrent publisher.
+func DecryptToCacheSnapshot(ctx context.Context, src, dst, hexKey string) (SourceSignature, CacheRevision, error) {
 	if err := os.MkdirAll(filepath.Dir(dst), 0700); err != nil {
-		return SourceSignature{}, err
+		return SourceSignature{}, CacheRevision{}, err
 	}
-	return retrySnapshotCapture(ctx, func() (SourceSignature, error) { return decryptCacheAttempt(ctx, src, dst, hexKey) })
+	var revision CacheRevision
+	source, err := retrySnapshotCapture(ctx, func() (SourceSignature, error) {
+		snapshot, err := openSourceSnapshot(ctx, src)
+		if err != nil {
+			return SourceSignature{}, err
+		}
+		defer snapshot.close()
+		return snapshot.publishRevision(ctx, dst, hexKey, &revision)
+	})
+	if err != nil {
+		return SourceSignature{}, CacheRevision{}, err
+	}
+	return source, revision, nil
 }
 
 func retrySnapshotCapture(ctx context.Context, attempt func() (SourceSignature, error)) (SourceSignature, error) {
@@ -168,16 +192,11 @@ func retrySnapshotCapture(ctx context.Context, attempt func() (SourceSignature, 
 	return SourceSignature{}, fmt.Errorf("capture remained unstable after 3 attempts: %w", last)
 }
 
-func decryptCacheAttempt(ctx context.Context, src, dst, hexKey string) (SourceSignature, error) {
-	snapshot, err := openSourceSnapshot(ctx, src)
-	if err != nil {
-		return SourceSignature{}, err
-	}
-	defer snapshot.close()
-	return snapshot.publish(ctx, dst, hexKey)
+func (snapshot *sourceSnapshot) publish(ctx context.Context, dst, hexKey string) (SourceSignature, error) {
+	return snapshot.publishRevision(ctx, dst, hexKey, nil)
 }
 
-func (snapshot *sourceSnapshot) publish(ctx context.Context, dst, hexKey string) (SourceSignature, error) {
+func (snapshot *sourceSnapshot) publishRevision(ctx context.Context, dst, hexKey string, revision *CacheRevision) (SourceSignature, error) {
 	var err error
 	tmp, err := os.CreateTemp(filepath.Dir(dst), filepath.Base(dst)+".*.tmp")
 	if err != nil {
@@ -207,8 +226,15 @@ func (snapshot *sourceSnapshot) publish(ctx context.Context, dst, hexKey string)
 	if err = os.Chmod(name, 0600); err != nil {
 		return SourceSignature{}, err
 	}
+	info, err := os.Stat(name)
+	if err != nil {
+		return SourceSignature{}, err
+	}
 	if err = os.Rename(name, dst); err != nil {
 		return SourceSignature{}, err
+	}
+	if revision != nil {
+		*revision = CacheRevision{Size: info.Size(), MTimeNS: info.ModTime().UnixNano()}
 	}
 	return snapshot.state.signature, nil
 }

@@ -2512,6 +2512,7 @@ func runNewMessages(ctx context.Context, args []string, stdout io.Writer) error 
 	}
 	if *format == "json" {
 		meta := newMessagesMeta{
+			Coverage:      result.Coverage,
 			SchemaVersion: messageEnvelopeSchemaVersion,
 			Timezone:      wxquery.LocalTimezoneName(),
 			Mode:          "new_messages",
@@ -2606,6 +2607,7 @@ func runMessages(ctx context.Context, args []string, stdout io.Writer, stderr io
 			Order:              result.Order,
 			NextCursor:         result.NextCursor,
 			queryExecutionMeta: result.Execution,
+			Coverage:           result.Coverage,
 			Username:           usernameValue,
 			Start:              wxquery.FormatMetaTime(result.Range.Start, result.Range.HasStart),
 			End:                wxquery.FormatMetaTime(result.Range.End, result.Range.HasEnd),
@@ -2692,6 +2694,7 @@ func runSearch(ctx context.Context, args []string, stdout io.Writer) error {
 			Timezone:           wxquery.LocalTimezoneName(),
 			Mode:               "search",
 			queryExecutionMeta: result.Execution,
+			Coverage:           result.Coverage,
 			Query:              strings.TrimSpace(*query),
 			Kind:               *kind,
 			ChatQuery:          chatQueryValue,
@@ -2778,6 +2781,7 @@ func runTimeline(ctx context.Context, args []string, stdout io.Writer) error {
 			Timezone:           wxquery.LocalTimezoneName(),
 			Mode:               "timeline",
 			queryExecutionMeta: result.Execution,
+			Coverage:           result.Coverage,
 			Kind:               "",
 			Query:              "",
 			Username:           usernameValue,
@@ -2985,11 +2989,12 @@ func runSNSNotifications(ctx context.Context, args []string, stdout io.Writer) e
 }
 
 type messagesMeta struct {
-	Order         string `json:"order"`
-	NextCursor    string `json:"next_cursor,omitempty"`
-	SchemaVersion int    `json:"schema_version"`
-	Timezone      string `json:"timezone"`
-	Mode          string `json:"mode"`
+	Coverage      *wxquery.DataCoverage `json:"data_coverage,omitempty"`
+	Order         string                `json:"order"`
+	NextCursor    string                `json:"next_cursor,omitempty"`
+	SchemaVersion int                   `json:"schema_version"`
+	Timezone      string                `json:"timezone"`
+	Mode          string                `json:"mode"`
 	queryExecutionMeta
 	Username     string   `json:"username"`
 	Start        string   `json:"start"`
@@ -3002,9 +3007,10 @@ type messagesMeta struct {
 }
 
 type timelineMeta struct {
-	SchemaVersion int    `json:"schema_version"`
-	Timezone      string `json:"timezone"`
-	Mode          string `json:"mode"`
+	Coverage      *wxquery.DataCoverage `json:"data_coverage,omitempty"`
+	SchemaVersion int                   `json:"schema_version"`
+	Timezone      string                `json:"timezone"`
+	Mode          string                `json:"mode"`
 	queryExecutionMeta
 	Kind         string   `json:"kind,omitempty"`
 	Query        string   `json:"query,omitempty"`
@@ -3020,9 +3026,10 @@ type timelineMeta struct {
 }
 
 type searchMeta struct {
-	SchemaVersion int    `json:"schema_version"`
-	Timezone      string `json:"timezone"`
-	Mode          string `json:"mode"`
+	Coverage      *wxquery.DataCoverage `json:"data_coverage,omitempty"`
+	SchemaVersion int                   `json:"schema_version"`
+	Timezone      string                `json:"timezone"`
+	Mode          string                `json:"mode"`
 	queryExecutionMeta
 	Query        string `json:"query"`
 	Kind         string `json:"kind,omitempty"`
@@ -3040,15 +3047,16 @@ type searchMeta struct {
 type queryExecutionMeta = wxquery.ExecutionMeta
 
 type newMessagesMeta struct {
-	SchemaVersion int    `json:"schema_version"`
-	Timezone      string `json:"timezone"`
-	Mode          string `json:"mode"`
-	FirstRun      bool   `json:"first_run"`
-	Reset         bool   `json:"reset"`
-	Limit         int    `json:"limit"`
-	Returned      int    `json:"returned"`
-	ChangedChats  int    `json:"changed_chats"`
-	StatePath     string `json:"state_path"`
+	Coverage      *wxquery.DataCoverage `json:"data_coverage,omitempty"`
+	SchemaVersion int                   `json:"schema_version"`
+	Timezone      string                `json:"timezone"`
+	Mode          string                `json:"mode"`
+	FirstRun      bool                  `json:"first_run"`
+	Reset         bool                  `json:"reset"`
+	Limit         int                   `json:"limit"`
+	Returned      int                   `json:"returned"`
+	ChangedChats  int                   `json:"changed_chats"`
+	StatePath     string                `json:"state_path"`
 }
 
 type messageEnvelope struct {

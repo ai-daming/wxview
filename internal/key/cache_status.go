@@ -258,6 +258,9 @@ func cacheStatusForTarget(target TargetDB, store storeLoad, meta metaLoad) (Cach
 		reasons = append(reasons, "metadata_unreadable")
 	} else if entry, ok := meta.meta.Files[target.DBRelPath]; ok {
 		item.RefreshedAt = formatCacheStatusTime(entry.RefreshedAt)
+		if entry.CacheSize != cacheInfo.Size() || entry.CacheMTimeNS != cacheInfo.ModTime().UnixNano() {
+			reasons = append(reasons, "cache_revision_unbound")
+		}
 		signature, signatureErr := statSourceSignature(target.DBPath)
 		if signatureErr != nil {
 			reasons = append(reasons, "source_snapshot_unavailable")
