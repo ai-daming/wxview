@@ -44,12 +44,9 @@ type ListMeta struct {
 	Order        string `json:"order,omitempty"`
 	NextAfterSeq int64  `json:"next_after_seq,omitempty"`
 
-	Mode            string `json:"mode,omitempty"`
-	QueryMode       string `json:"query_mode,omitempty"`
-	IndexUsed       *bool  `json:"index_used,omitempty"`
-	IndexStatus     string `json:"index_status,omitempty"`
-	IndexReason     string `json:"index_reason,omitempty"`
-	IndexLagSeconds int64  `json:"index_lag_seconds,omitempty"`
+	Mode      string `json:"mode,omitempty"`
+	QueryMode string `json:"query_mode,omitempty"`
+	IndexUsed *bool  `json:"index_used,omitempty"`
 
 	Username     string `json:"username,omitempty"`
 	Kind         string `json:"kind,omitempty"`
@@ -295,11 +292,6 @@ func (h *handler) handleMessages(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_source", err.Error())
 		return
 	}
-	noIndex, err := parseBoolQuery(q.Get("no_index"), false, "no_index")
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_no_index", err.Error())
-		return
-	}
 	target, _, info, err := h.resolveAccount(r.Context(), false)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "account_discovery_failed", err.Error())
@@ -319,7 +311,6 @@ func (h *handler) handleMessages(w http.ResponseWriter, r *http.Request) {
 		Limit:                    limit,
 		Offset:                   offset,
 		IncludeSource:            includeSource,
-		NoIndex:                  noIndex,
 		WantHasMore:              true,
 		CacheMode:                wxquery.CacheMode{ReadOnly: true},
 	})
@@ -463,11 +454,6 @@ func (h *handler) handleTimeline(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_source", err.Error())
 		return
 	}
-	noIndex, err := parseBoolQuery(q.Get("no_index"), false, "no_index")
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_no_index", err.Error())
-		return
-	}
 	target, _, info, err := h.resolveAccount(r.Context(), false)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "account_discovery_failed", err.Error())
@@ -484,7 +470,6 @@ func (h *handler) handleTimeline(w http.ResponseWriter, r *http.Request) {
 		Limit:         limit,
 		Cursor:        strings.TrimSpace(q.Get("cursor")),
 		IncludeSource: includeSource,
-		NoIndex:       noIndex,
 		CacheMode:     wxquery.CacheMode{ReadOnly: true},
 	})
 	if err != nil {

@@ -80,18 +80,39 @@ func TestWebAPIWALRefreshAndReadOnlyPreview(t *testing.T) {
 	check(1) // GET refresh=true must remain ignored.
 	request(http.MethodPost, "/v1/cache/refresh?scope=messages")
 	check(2)
-	for _, path := range []string{"/v1/search?username=alice&query=baseline&limit=10", "/v1/timeline?username=alice&start=0&end=500&limit=10", "/v1/new-messages", "/v1/contacts?limit=10", "/v1/sessions?limit=10"} {
+	const searchPath = "/v1/search?username=alice&query=AL-FIR&limit=10"
+	const timelinePath = "/v1/timeline?username=alice&start=0&end=500&limit=10"
+	for _, path := range []string{searchPath, timelinePath, "/v1/new-messages", "/v1/contacts?limit=10", "/v1/sessions?limit=10"} {
 		response := request(http.MethodGet, path)
 		var decoded struct {
 			Meta struct {
-				Coverage *query.DataCoverage `json:"data_coverage"`
+				Coverage  *query.DataCoverage `json:"data_coverage"`
+				QueryMode string              `json:"query_mode"`
+				IndexUsed *bool               `json:"index_used"`
 			} `json:"meta"`
+			Items []json.RawMessage `json:"items"`
 		}
 		if err := json.Unmarshal(response.Body.Bytes(), &decoded); err != nil {
 			t.Fatal(err)
 		}
 		if decoded.Meta.Coverage == nil || decoded.Meta.Coverage.State != "fresh" {
 			t.Fatalf("%s coverage=%+v", path, decoded.Meta.Coverage)
+		}
+		if path == searchPath || path == timelinePath {
+			if decoded.Meta.QueryMode != "scan" || decoded.Meta.IndexUsed == nil || *decoded.Meta.IndexUsed {
+				t.Fatalf("%s did not use a direct cache scan", path)
+			}
+			want := 1
+			if path == timelinePath {
+				want = 2
+			}
+			if len(decoded.Items) != want {
+				t.Fatalf("%s returned %d items, want %d", path, len(decoded.Items), want)
+			}
+			var last messages.Message
+			if err := json.Unmarshal(decoded.Items[want-1], &last); err != nil || last.Content != "wal-first" {
+				t.Fatalf("%s missed the committed WAL message", path)
+			}
 		}
 	}
 	state, err := (query.Runtime{}).NewMessagesStatePath("synthetic", true)

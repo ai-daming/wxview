@@ -10,7 +10,6 @@ import (
 	"wxview/internal/decrypt/decrypttest"
 	"wxview/internal/key"
 	"wxview/internal/messages"
-	"wxview/internal/msgindex"
 	"wxview/internal/sqlitedb"
 )
 
@@ -60,7 +59,7 @@ func TestQueryCoverageTracksWALAndActualDependencies(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(target.DataDir, "favorite/favorite.db"), []byte("unused"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	req := MessagesRequest{Username: "alice", NoIndex: true, CacheMode: CacheMode{ReadOnly: true}}
+	req := MessagesRequest{Username: "alice", CacheMode: CacheMode{ReadOnly: true}}
 	first, err := rt.Messages(ctx, req)
 	if err != nil {
 		t.Fatal(err)
@@ -72,7 +71,7 @@ func TestQueryCoverageTracksWALAndActualDependencies(t *testing.T) {
 	if len(first.Coverage.Sources) != 2 {
 		t.Fatalf("unexpected dependencies: %+v", first.Coverage.Sources)
 	}
-	empty, err := rt.Messages(ctx, MessagesRequest{Username: "alice", StartText: "500", NoIndex: true, CacheMode: req.CacheMode})
+	empty, err := rt.Messages(ctx, MessagesRequest{Username: "alice", StartText: "500", CacheMode: req.CacheMode})
 	if err != nil || len(empty.Items) != 0 {
 		t.Fatal("normal empty query failed", err)
 	}
@@ -94,7 +93,7 @@ func TestQueryCoverageTracksWALAndActualDependencies(t *testing.T) {
 		t.Fatal(err)
 	}
 	requireCoverage(t, search.Coverage, "stale")
-	timeline, err := rt.Timeline(ctx, TimelineRequest{Username: "alice", StartText: "0", EndText: "500", Limit: 10, NoIndex: true, CacheMode: req.CacheMode})
+	timeline, err := rt.Timeline(ctx, TimelineRequest{Username: "alice", StartText: "0", EndText: "500", Limit: 10, CacheMode: req.CacheMode})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +121,7 @@ func TestQueryCoverageMissingAndConcurrentReplacement(t *testing.T) {
 		}
 		return contact, nil
 	}
-	result, err := rt.Messages(ctx, MessagesRequest{Username: "alice", NoIndex: true, CacheMode: CacheMode{ReadOnly: true}})
+	result, err := rt.Messages(ctx, MessagesRequest{Username: "alice", CacheMode: CacheMode{ReadOnly: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,7 +138,7 @@ func TestQueryCoverageMissingAndConcurrentReplacement(t *testing.T) {
 	if err = os.Remove(contact); err != nil {
 		t.Fatal(err)
 	}
-	result, err = rt.Messages(ctx, MessagesRequest{Username: "alice", NoIndex: true, CacheMode: CacheMode{ReadOnly: true}})
+	result, err = rt.Messages(ctx, MessagesRequest{Username: "alice", CacheMode: CacheMode{ReadOnly: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,32 +151,11 @@ func TestQueryCoverageMissingAndConcurrentReplacement(t *testing.T) {
 	}
 }
 
-func TestQueryCoverageSeparatesIndexAndSourceFreshness(t *testing.T) {
-	rt, target, cache, f, _ := coverageRuntime(t)
-	ctx := context.Background()
-	index, _ := msgindex.Path(target.Account)
-	_, err := msgindex.Build(ctx, msgindex.BuildOptions{Account: target.Account, IndexPath: index, MessageCachePaths: []string{cache}, ChatUsernames: []string{"alice"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = os.WriteFile(filepath.Join(target.DataDir, "message/message_0.db-wal"), f.WAL1, 0600); err != nil {
-		t.Fatal(err)
-	}
-	result, err := rt.Messages(ctx, MessagesRequest{Username: "alice", CacheMode: CacheMode{ReadOnly: true}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !result.Execution.IndexUsed {
-		t.Fatal("fixture did not exercise index path", result.Execution)
-	}
-	requireCoverage(t, result.Coverage, "stale")
-}
-
 func TestQueryCoverageIncludesMediaOnlyWhenUsed(t *testing.T) {
 	rt, target, cache, f, _ := coverageRuntime(t)
 	ctx := context.Background()
 	f.Write(t, filepath.Join(target.DataDir, "message/media_0.db"), 0)
-	req := MessagesRequest{Username: "alice", NoIndex: true, CacheMode: CacheMode{ReadOnly: true}}
+	req := MessagesRequest{Username: "alice", CacheMode: CacheMode{ReadOnly: true}}
 	result, err := rt.Messages(ctx, req)
 	if err != nil {
 		t.Fatal(err)
@@ -220,37 +198,6 @@ func TestQueryCoverageIncludesMediaOnlyWhenUsed(t *testing.T) {
 	}
 }
 
-func TestQueryCoverageIndexReplacementIsUnknown(t *testing.T) {
-	rt, target, cache, _, _ := coverageRuntime(t)
-	ctx := context.Background()
-	index, _ := msgindex.Path(target.Account)
-	if _, err := msgindex.Build(ctx, msgindex.BuildOptions{Account: target.Account, IndexPath: index, MessageCachePaths: []string{cache}, ChatUsernames: []string{"alice"}}); err != nil {
-		t.Fatal(err)
-	}
-	rt.ContactCachePath = func(account string) (string, error) {
-		info, err := os.Stat(index)
-		if err != nil {
-			return "", err
-		}
-		changed := info.ModTime().Add(time.Second)
-		if err = os.Chtimes(index, changed, changed); err != nil {
-			return "", err
-		}
-		return key.ReadOnlyCachePath(account, "contact/contact.db")
-	}
-	result, err := rt.Messages(ctx, MessagesRequest{Username: "alice", CacheMode: CacheMode{ReadOnly: true}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !result.Execution.IndexUsed {
-		t.Fatal("index was not exercised")
-	}
-	requireCoverage(t, result.Coverage, "unknown")
-	if result.Coverage.Reason != "index_changed_during_query" {
-		t.Fatal(result.Coverage.Reason)
-	}
-}
-
 func TestReadOnlyQueryDoesNotInitializeMissingState(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -278,7 +225,7 @@ func TestQueryCoverageReportsOptionalReadAndPathErrors(t *testing.T) {
 			} else {
 				rt.ContactCachePath = func(string) (string, error) { return "", errors.New("synthetic unavailable cache path") }
 			}
-			result, err := rt.Messages(context.Background(), MessagesRequest{Username: "alice", NoIndex: true, CacheMode: CacheMode{ReadOnly: true}})
+			result, err := rt.Messages(context.Background(), MessagesRequest{Username: "alice", CacheMode: CacheMode{ReadOnly: true}})
 			if err != nil {
 				t.Fatal(err)
 			}

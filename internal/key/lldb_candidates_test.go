@@ -159,6 +159,27 @@ func TestCaptureRejectsInvalidAndKeepsVerifiedOld(t *testing.T) {
 	}
 }
 
+func TestCaptureDiscoverySkipsWeChatMessageFTS(t *testing.T) {
+	root := captureRoot(t)
+	captureFixture(t, root, "contact/contact.db", 1)
+	captureFixture(t, root, "message/message_0.db", 2)
+	captureFixture(t, root, "message/message_fts.db", 3)
+	captureFixture(t, root, "message/message_resource.db", 4)
+	captureFixture(t, root, "message/message_revoke.db", 5)
+	targets, _, err := discoverCaptureTargets(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var paths []string
+	for _, target := range targets {
+		paths = append(paths, target.DBRelPath)
+	}
+	want := []string{"contact/contact.db", "message/message_0.db", "message/message_resource.db", "message/message_revoke.db"}
+	if !reflect.DeepEqual(paths, want) {
+		t.Fatalf("capture targets = %v, want %v", paths, want)
+	}
+}
+
 func TestReadCaptureFileStrictAndPrivateErrors(t *testing.T) {
 	secret := strings.Repeat("ab", 32)
 	salt := strings.Repeat("cd", 16)

@@ -20,7 +20,6 @@ import (
 	"wxview/internal/key"
 	"wxview/internal/media"
 	"wxview/internal/messages"
-	"wxview/internal/msgindex"
 	"wxview/internal/sessions"
 	"wxview/internal/sns"
 	"wxview/internal/timeline"
@@ -38,11 +37,8 @@ type CacheMode struct {
 }
 
 type ExecutionMeta struct {
-	QueryMode       string `json:"query_mode,omitempty"`
-	IndexUsed       bool   `json:"index_used"`
-	IndexStatus     string `json:"index_status,omitempty"`
-	IndexReason     string `json:"index_reason,omitempty"`
-	IndexLagSeconds int64  `json:"index_lag_seconds,omitempty"`
+	QueryMode string `json:"query_mode,omitempty"`
+	IndexUsed bool   `json:"index_used"`
 }
 
 type TimeRange struct {
@@ -133,7 +129,6 @@ type MessagesRequest struct {
 	Limit                    int
 	Offset                   int
 	IncludeSource            bool
-	NoIndex                  bool
 	WantHasMore              bool
 	CacheMode
 }
@@ -187,7 +182,6 @@ type TimelineRequest struct {
 	Limit         int
 	Cursor        string
 	IncludeSource bool
-	NoIndex       bool
 	CacheMode
 }
 
@@ -362,7 +356,7 @@ func (rt Runtime) Contacts(ctx context.Context, req ContactsRequest) (out Contac
 	rt, ctx, coverage := rt.beginRead(ctx)
 	defer func() {
 		if err == nil {
-			out.Coverage = coverage.finish(false)
+			out.Coverage = coverage.finish()
 		}
 	}()
 	if req.Kind == "" {
@@ -398,7 +392,7 @@ func (rt Runtime) ContactDetail(ctx context.Context, req ContactDetailRequest) (
 	rt, ctx, coverage := rt.beginRead(ctx)
 	defer func() {
 		if err == nil {
-			out.Coverage = coverage.finish(false)
+			out.Coverage = coverage.finish()
 		}
 	}()
 	target, cachePath, err := rt.ContactCache(ctx, req.CacheMode)
@@ -426,7 +420,7 @@ func (rt Runtime) Members(ctx context.Context, req MembersRequest) (out MembersR
 	rt, ctx, coverage := rt.beginRead(ctx)
 	defer func() {
 		if err == nil {
-			out.Coverage = coverage.finish(false)
+			out.Coverage = coverage.finish()
 		}
 	}()
 	_, cachePath, err := rt.ContactCache(ctx, req.CacheMode)
@@ -464,7 +458,7 @@ func (rt Runtime) Sessions(ctx context.Context, req SessionsRequest) (out Sessio
 	rt, ctx, coverage := rt.beginRead(ctx)
 	defer func() {
 		if err == nil {
-			out.Coverage = coverage.finish(false)
+			out.Coverage = coverage.finish()
 		}
 	}()
 	if req.Kind == "" {
@@ -492,7 +486,7 @@ func (rt Runtime) Messages(ctx context.Context, req MessagesRequest) (out Messag
 	rt, ctx, coverage := rt.beginRead(ctx)
 	defer func() {
 		if err == nil {
-			out.Coverage = coverage.finish(out.Execution.IndexUsed)
+			out.Coverage = coverage.finish()
 		}
 	}()
 	rt = rt.withDefaults()
@@ -564,7 +558,7 @@ func (rt Runtime) Messages(ctx context.Context, req MessagesRequest) (out Messag
 		observeCache(ctx, path, true)
 	}
 	service := messages.NewService(cachePaths)
-	list, execution, err := ListMessagesMaybeIndex(ctx, target.Account, cachePaths, service, !req.NoIndex, messages.QueryOptions{
+	list, err := service.List(ctx, messages.QueryOptions{
 		Username:      username,
 		Order:         order,
 		After:         after,
@@ -593,14 +587,14 @@ func (rt Runtime) Messages(ctx context.Context, req MessagesRequest) (out Messag
 		nextCursor = encodeMessageCursor(identity, messages.KeyForPage(page[len(page)-1]))
 		nextAfterSeq = 0
 	}
-	return MessagesResult{Order: order, NextCursor: nextCursor, Target: target, Items: page, Range: rangeValue, Execution: execution, HasMore: hasMore, NextAfterSeq: nextAfterSeq}, nil
+	return MessagesResult{Order: order, NextCursor: nextCursor, Target: target, Items: page, Range: rangeValue, Execution: ExecutionMeta{QueryMode: "scan"}, HasMore: hasMore, NextAfterSeq: nextAfterSeq}, nil
 }
 
 func (rt Runtime) Search(ctx context.Context, req SearchRequest) (out SearchResult, err error) {
 	rt, ctx, coverage := rt.beginRead(ctx)
 	defer func() {
 		if err == nil {
-			out.Coverage = coverage.finish(out.Execution.IndexUsed)
+			out.Coverage = coverage.finish()
 		}
 	}()
 	queryText := strings.TrimSpace(req.Query)
@@ -647,7 +641,7 @@ func (rt Runtime) Search(ctx context.Context, req SearchRequest) (out SearchResu
 	return SearchResult{
 		Items:        list,
 		Range:        rangeValue,
-		Execution:    ScanExecution("index_not_supported_for_search"),
+		Execution:    ExecutionMeta{QueryMode: "scan"},
 		TotalMatches: total,
 		MatchedChats: matchedChats,
 		HasMore:      req.Offset+len(list) < total,
@@ -658,7 +652,7 @@ func (rt Runtime) Timeline(ctx context.Context, req TimelineRequest) (out Timeli
 	rt, ctx, coverage := rt.beginRead(ctx)
 	defer func() {
 		if err == nil {
-			out.Coverage = coverage.finish(out.Execution.IndexUsed)
+			out.Coverage = coverage.finish()
 		}
 	}()
 	if req.Kind == "" {
@@ -701,7 +695,7 @@ func (rt Runtime) Timeline(ctx context.Context, req TimelineRequest) (out Timeli
 		observeCache(ctx, path, true)
 	}
 	service := messages.NewService(cachePaths)
-	result, execution, err := TimelineMaybeIndex(ctx, target.Account, cachePaths, service, !req.NoIndex, timeline.QueryOptions{
+	result, err := timeline.List(ctx, service, timeline.QueryOptions{
 		Chats:         chats,
 		Start:         rangeValue.Start,
 		End:           rangeValue.End,
@@ -717,7 +711,7 @@ func (rt Runtime) Timeline(ctx context.Context, req TimelineRequest) (out Timeli
 	return TimelineResult{
 		Items:        result.Items,
 		Range:        rangeValue,
-		Execution:    execution,
+		Execution:    ExecutionMeta{QueryMode: "scan"},
 		MatchedChats: matchedChats,
 		HasMore:      result.HasMore,
 		NextCursor:   result.NextCursor,
@@ -728,7 +722,7 @@ func (rt Runtime) NewMessages(ctx context.Context, req NewMessagesRequest) (out 
 	rt, ctx, coverage := rt.beginRead(ctx)
 	defer func() {
 		if err == nil {
-			out.Coverage = coverage.finish(false)
+			out.Coverage = coverage.finish()
 		}
 	}()
 	target, err := rt.ContactTarget()
@@ -840,7 +834,7 @@ func (rt Runtime) Favorites(ctx context.Context, req FavoritesRequest) (out Favo
 	rt, ctx, coverage := rt.beginRead(ctx)
 	defer func() {
 		if err == nil {
-			out.Coverage = coverage.finish(false)
+			out.Coverage = coverage.finish()
 		}
 	}()
 	target, cachePath, err := rt.FavoriteCachePath(ctx, req.CacheMode)
@@ -867,7 +861,7 @@ func (rt Runtime) ArticleAccounts(ctx context.Context, req ArticleAccountsReques
 	rt, ctx, coverage := rt.beginRead(ctx)
 	defer func() {
 		if err == nil {
-			out.Coverage = coverage.finish(false)
+			out.Coverage = coverage.finish()
 		}
 	}()
 	_, contactPath, err := rt.ContactCache(ctx, req.CacheMode)
@@ -885,7 +879,7 @@ func (rt Runtime) Articles(ctx context.Context, req ArticlesRequest) (out Articl
 	rt, ctx, coverage := rt.beginRead(ctx)
 	defer func() {
 		if err == nil {
-			out.Coverage = coverage.finish(false)
+			out.Coverage = coverage.finish()
 		}
 	}()
 	rangeValue, err := ParseMessageRange(req.Date, req.StartText, req.EndText, rt.withDefaults().Now())
@@ -931,7 +925,7 @@ func (rt Runtime) SNSFeed(ctx context.Context, req SNSFeedRequest) (out SNSFeedR
 	rt, ctx, coverage := rt.beginRead(ctx)
 	defer func() {
 		if err == nil {
-			out.Coverage = coverage.finish(false)
+			out.Coverage = coverage.finish()
 		}
 	}()
 	rangeValue, err := ParseMessageRange(req.Date, req.StartText, req.EndText, rt.withDefaults().Now())
@@ -966,7 +960,7 @@ func (rt Runtime) SNSNotifications(ctx context.Context, req SNSNotificationsRequ
 	rt, ctx, coverage := rt.beginRead(ctx)
 	defer func() {
 		if err == nil {
-			out.Coverage = coverage.finish(false)
+			out.Coverage = coverage.finish()
 		}
 	}()
 	rangeValue, err := ParseMessageRange(req.Date, req.StartText, req.EndText, rt.withDefaults().Now())
@@ -1382,145 +1376,6 @@ func mediaResolverFor(target key.TargetDB) (*media.Resolver, error) {
 	}
 	resolver := media.NewResolver(target.DataDir, cacheDir, resourceDBs...)
 	return &resolver, nil
-}
-
-func ListMessagesMaybeIndex(ctx context.Context, account string, cachePaths []string, service messages.Service, useIndex bool, opts messages.QueryOptions) ([]messages.Message, ExecutionMeta, error) {
-	if !useIndex {
-		list, err := service.List(ctx, opts)
-		return list, ScanExecution("index_disabled_by_flag"), err
-	}
-	indexPath, usability, ok := queryIndexUsability(ctx, account, cachePaths, msgindex.UsabilityOptions{
-		Username: opts.Username,
-		Start:    opts.Start,
-		End:      opts.End,
-		HasStart: opts.HasStart,
-		HasEnd:   opts.HasEnd,
-	})
-	if ok {
-		refs, err := msgindex.MessageRefs(ctx, indexPath, msgindex.MessageQuery{
-			Order:       opts.Order,
-			After:       opts.After,
-			Username:    opts.Username,
-			Start:       opts.Start,
-			End:         opts.End,
-			AfterSeq:    opts.AfterSeq,
-			HasStart:    opts.HasStart,
-			HasEnd:      opts.HasEnd,
-			HasAfterSeq: opts.HasAfterSeq,
-			Limit:       opts.Limit,
-			Offset:      opts.Offset,
-		})
-		if err == nil {
-			list, err := service.ListByRefs(ctx, refs, messages.RefQueryOptions{IncludeSource: opts.IncludeSource, MediaResolver: opts.MediaResolver})
-			if err == nil {
-				return list, indexExecution(usability), nil
-			}
-		}
-	}
-	list, err := service.List(ctx, opts)
-	return list, scanExecutionFromUsability(usability), err
-}
-
-func TimelineMaybeIndex(ctx context.Context, account string, cachePaths []string, service messages.Service, useIndex bool, opts timeline.QueryOptions) (timeline.Result, ExecutionMeta, error) {
-	if !useIndex {
-		result, err := timeline.List(ctx, service, opts)
-		return result, ScanExecution("index_disabled_by_flag"), err
-	}
-	indexPath, usability, ok := queryIndexUsability(ctx, account, cachePaths, msgindex.UsabilityOptions{
-		Chats:    opts.Chats,
-		Start:    opts.Start,
-		End:      opts.End,
-		HasStart: true,
-		HasEnd:   true,
-	})
-	if ok {
-		var after timeline.SortKey
-		hasAfter := false
-		if strings.TrimSpace(opts.Cursor) != "" {
-			var err error
-			after, err = timeline.DecodeCursor(opts.Cursor, opts.QueryHash)
-			if err != nil {
-				return timeline.Result{}, scanExecutionFromUsability(usability), err
-			}
-			hasAfter = true
-		}
-		refs, err := msgindex.TimelineRefs(ctx, indexPath, msgindex.TimelineQuery{
-			Chats:    opts.Chats,
-			Start:    opts.Start,
-			End:      opts.End,
-			After:    after,
-			HasAfter: hasAfter,
-			Limit:    opts.Limit + 1,
-		})
-		if err == nil {
-			items, err := service.ListByRefs(ctx, refs, messages.RefQueryOptions{IncludeSource: opts.IncludeSource})
-			if err == nil {
-				chatInfo := make(map[string]messages.ChatInfo, len(opts.Chats))
-				for _, chat := range opts.Chats {
-					chatInfo[chat.Username] = chat
-				}
-				messages.ApplyChatInfo(items, chatInfo)
-				result := timeline.Result{Items: items}
-				if len(result.Items) > opts.Limit {
-					result.HasMore = true
-					result.Items = result.Items[:opts.Limit]
-				}
-				if result.HasMore && len(result.Items) > 0 {
-					next, err := timeline.EncodeCursor(opts.QueryHash, timeline.KeyFor(result.Items[len(result.Items)-1]))
-					if err != nil {
-						return timeline.Result{}, scanExecutionFromUsability(usability), err
-					}
-					result.NextCursor = next
-				}
-				return result, indexExecution(usability), nil
-			}
-		}
-	}
-	result, err := timeline.List(ctx, service, opts)
-	return result, scanExecutionFromUsability(usability), err
-}
-
-func queryIndexUsability(ctx context.Context, account string, cachePaths []string, opts msgindex.UsabilityOptions) (string, msgindex.Usability, bool) {
-	indexPath, err := msgindex.LocalPath(account)
-	if err != nil {
-		return "", msgindex.Usability{Reason: "index_path_error"}, false
-	}
-	if strings.TrimSpace(opts.SessionCachePath) == "" {
-		if path, err := key.ReadOnlyCachePath(account, "session/session.db"); err == nil {
-			if info, err := os.Stat(path); err == nil && !info.IsDir() {
-				opts.SessionCachePath = path
-			}
-		}
-	}
-	usability, err := msgindex.UseForQuery(ctx, indexPath, cachePaths, opts)
-	if err != nil || !usability.UseIndex {
-		if err != nil && strings.TrimSpace(usability.Reason) == "" {
-			usability.Reason = "index_status_error"
-		}
-		return "", usability, false
-	}
-	return indexPath, usability, true
-}
-
-func indexExecution(usability msgindex.Usability) ExecutionMeta {
-	return ExecutionMeta{
-		QueryMode:       msgindex.QueryModeIndex,
-		IndexUsed:       true,
-		IndexStatus:     usability.Status.Status,
-		IndexReason:     firstNonEmpty(usability.Reason, "index_usable"),
-		IndexLagSeconds: usability.Status.LagSeconds,
-	}
-}
-
-func ScanExecution(reason string) ExecutionMeta {
-	return ExecutionMeta{QueryMode: msgindex.QueryModeScan, IndexUsed: false, IndexReason: reason}
-}
-
-func scanExecutionFromUsability(usability msgindex.Usability) ExecutionMeta {
-	meta := ScanExecution(firstNonEmpty(usability.Reason, "index_unusable"))
-	meta.IndexStatus = usability.Status.Status
-	meta.IndexLagSeconds = usability.Status.LagSeconds
-	return meta
 }
 
 func trimMessagePage(list []messages.Message, limit int) ([]messages.Message, bool) {
@@ -1945,13 +1800,4 @@ func runRefreshStep(ctx context.Context, client daemon.Client, daemonHealthy boo
 		return false
 	}
 	return true
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return value
-		}
-	}
-	return ""
 }

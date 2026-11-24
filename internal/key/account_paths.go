@@ -10,6 +10,11 @@ import (
 	"strings"
 )
 
+var messageAuxRelPaths = []string{
+	"message/message_resource.db",
+	"message/message_revoke.db",
+}
+
 // TargetFor resolves a database within an already selected account.
 func TargetFor(account TargetDB, relative string) TargetDB {
 	return TargetDB{Account: account.Account, DataDir: account.DataDir, DBRelPath: relative, DBPath: filepath.Join(account.DataDir, filepath.FromSlash(relative))}
@@ -52,7 +57,7 @@ func AccountMessageTargets(account TargetDB) ([]TargetDB, error) {
 		}
 		targets = append(targets, extra...)
 	}
-	for _, rel := range []string{"message/message_fts.db", "message/message_resource.db", "message/message_revoke.db"} {
+	for _, rel := range messageAuxRelPaths {
 		target := TargetFor(account, rel)
 		if info, err := os.Stat(target.DBPath); err == nil && !info.IsDir() {
 			targets = append(targets, target)

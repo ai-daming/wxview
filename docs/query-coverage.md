@@ -42,15 +42,14 @@
 | `missing` | 本次尝试使用的缓存不存在；必需缓存沿用既有错误响应，不会伪装成成功 |
 | `unknown` | 元数据缺失/不可读、旧条目没有版本绑定、源不可确认、可选读取失败，或查询期间缓存/元数据发生变化 |
 
-聚合 `data_coverage.state` 通常按 `partial`（存在 missing）、`stale`、`unknown`、`fresh` 的顺序汇总；所有单库状态仍完整保留。查询期间缓存或已使用索引变化时，聚合优先为 `unknown`，并给出 `reason`。没有观察到依赖时也为 unknown。
+聚合 `data_coverage.state` 通常按 `partial`（存在 missing）、`stale`、`unknown`、`fresh` 的顺序汇总；所有单库状态仍完整保留。查询期间缓存变化时，聚合优先为 `unknown`，并给出 `reason`。没有观察到依赖时也为 unknown。
 
-例如，仅 WAL 改变、主库未变时，既有索引仍可能对旧缓存有效：
+例如，仅 WAL 改变时，基于旧缓存的查询会报告源数据已变化。
 
 ```json
 {
-  "query_mode":"index",
-  "index_used":true,
-  "index_status":"ready",
+  "query_mode":"scan",
+  "index_used":false,
   "data_coverage":{
     "scope":"local_synced_data",
     "account":"synthetic",
@@ -63,9 +62,9 @@
 }
 ```
 
-示例省略了其他依赖。`index_status`/`index_used` 只描述索引相对缓存的可用性；`data_coverage` 另行说明缓存相对微信源数据的状态。
+示例省略了其他依赖。`data_coverage` 说明缓存相对微信源数据的状态。
 
-查询期间缓存被替换时，该 source 返回 `state=unknown, reason=cache_changed_during_query`，省略无法绑定的 captured_at；聚合 reason 同样指出变化。元数据条目变化为 `snapshot_metadata_changed_during_query`，无版本绑定为 `cache_revision_unbound`，元数据不可得为 `snapshot_metadata_unavailable`，源不可确认或已移除为 `source_unavailable`。已使用索引的主库/WAL 变化为聚合 `index_changed_during_query`。已知可选读取错误为 `cache_read_failed`，依赖路径解析失败为 `cache_path_unavailable`。
+查询期间缓存被替换时，该 source 返回 `state=unknown, reason=cache_changed_during_query`，省略无法绑定的 captured_at；聚合 reason 同样指出变化。元数据条目变化为 `snapshot_metadata_changed_during_query`，无版本绑定为 `cache_revision_unbound`，元数据不可得为 `snapshot_metadata_unavailable`，源不可确认或已移除为 `source_unavailable`。已知可选读取错误为 `cache_read_failed`，依赖路径解析失败为 `cache_path_unavailable`。
 
 ## 兼容性与错误
 
@@ -83,7 +82,7 @@
 
 ## 验证
 
-合成 SQLite/WAL 数据覆盖：正常空结果、无关辅助库不影响、WAL-only 源变化、旧元数据 unknown 与显式升级、可选联系人/媒体缺失、必需库失败、旧缓存/元数据保留、索引 ready 而源 stale、查询期间缓存或索引变化、源无法确认，以及只读查询不初始化状态。测试通过四个 CLI JSON 入口与对应 HTTP 入口核对语义，并保留原分页、item 格式及增量预览检查点。
+合成 SQLite/WAL 数据覆盖：正常空结果、无关辅助库不影响、WAL-only 源变化、旧元数据 unknown 与显式升级、可选联系人/媒体缺失、必需库失败、旧缓存/元数据保留、查询期间缓存变化、源无法确认，以及只读查询不初始化状态。测试通过四个 CLI JSON 入口与对应 HTTP 入口核对语义，并保留原分页、item 格式及增量预览检查点。
 
 本轮运行受影响模块测试、相关 CLI 测试、race、macOS/Windows vet 与双平台构建；未运行本地全仓回归。Windows 仅交叉编译，未做 Windows 微信实机验收。
 

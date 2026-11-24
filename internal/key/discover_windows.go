@@ -28,12 +28,6 @@ const (
 	envWindowsDataRoot  = "WXVIEW_WECHAT_DATA_ROOT"
 )
 
-var messageAuxRelPaths = []string{
-	"message/message_fts.db",
-	"message/message_resource.db",
-	"message/message_revoke.db",
-}
-
 var procMultiByteToWideChar = kernel32DLL.NewProc("MultiByteToWideChar")
 
 type TargetDB struct {

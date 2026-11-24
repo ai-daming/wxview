@@ -12,10 +12,10 @@ bin/wxview messages --username synthetic-chat --order desc --limit 100 --format 
 
 Continue with the argument array in `meta.next_args`, using an executable plus argument
 array, never shell evaluation. Allowlist `--username`, `--order`, `--cursor`, `--limit`,
-`--start`, `--end`, `--format`, and optionally `--source` / `--no-index`.
+`--start`, `--end`, `--format`, and optionally `--source`.
 Validate the expected account, conversation, direction and fixed bounds in the consuming
 application. Cursor identity includes account/data-directory hash; no secrets or content.
-A client may change limit or index selection between pages. Account/range/order changes
+A client may change limit between pages. Account/range/order changes
 require restarting from page one. Explicit order requires positive limit.
 
 Synthetic shape (cursor shown as a placeholder, not executable):
@@ -77,7 +77,7 @@ Shared snapshot: 20s account probe, 5s shard enumeration, 1s known-file checks; 
 macOS uses open-file evidence for account selection, caching failure for 20s rather than
 selecting a fallback account by mtime. A missing message directory retries independently.
 All daemon cache-writing entrypoints are serialized; watcher callbacks have one pending
-slot, and existing index refresh coalescing remains. Windows retains its platform account
+slot. Windows retains its platform account
 discovery policy; no new process probing is introduced there.
 
 This change does not patch WAL, change key initialization, advance checkpoints or restart

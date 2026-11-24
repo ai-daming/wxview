@@ -40,9 +40,6 @@ func (h *handler) messageMeta(info identity.Info, resource string, limit int, re
 	if execution.QueryMode != "" {
 		meta.QueryMode = execution.QueryMode
 		meta.IndexUsed = boolPtr(execution.IndexUsed)
-		meta.IndexStatus = execution.IndexStatus
-		meta.IndexReason = execution.IndexReason
-		meta.IndexLagSeconds = execution.IndexLagSeconds
 	}
 	return meta
 }
@@ -121,6 +118,7 @@ func nextMessagesURL(r *http.Request, nextAfterSeq int64, limit int) string {
 	values.Set("after_seq", strconv.FormatInt(nextAfterSeq, 10))
 	values.Del("offset")
 	values.Del("refresh")
+	values.Del("no_index")
 	if limit > 0 {
 		values.Set("limit", strconv.Itoa(limit))
 	}
@@ -136,6 +134,7 @@ func nextCursorURL(r *http.Request, cursor string) string {
 	values := next.Query()
 	values.Set("cursor", cursor)
 	values.Del("refresh")
+	values.Del("no_index")
 	next.RawQuery = values.Encode()
 	return next.RequestURI()
 }
@@ -231,6 +230,7 @@ func nextMessagesCursorURL(r *http.Request, result wxquery.MessagesResult) strin
 	values.Del("offset")
 	values.Del("after_seq")
 	values.Del("refresh")
+	values.Del("no_index")
 	values.Set("order", result.Order)
 	values.Set("cursor", result.NextCursor)
 	if result.Range.HasStart {

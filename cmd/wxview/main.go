@@ -13,7 +13,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -28,7 +27,6 @@ import (
 	"wxview/internal/identity"
 	"wxview/internal/key"
 	"wxview/internal/messages"
-	"wxview/internal/msgindex"
 	wxquery "wxview/internal/query"
 	"wxview/internal/sessions"
 	"wxview/internal/sns"
@@ -64,8 +62,6 @@ func run(args []string, stdout io.Writer, stderr io.Writer) error {
 		return runAPI(ctx, args[1:], stdout)
 	case "cache":
 		return runCache(args[1:], stdout)
-	case "index":
-		return runIndex(ctx, args[1:], stdout)
 	case "contact", "contacts":
 		return runContacts(ctx, args[1:], stdout)
 	case "members":
@@ -123,7 +119,6 @@ Commands:
   wxview daemon     Show daemon help.
   wxview api        Run the local WebAPI.
   wxview cache      Inspect local decrypted cache freshness and key coverage.
-  wxview index      Inspect and maintain the derived message index.
   wxview contacts   List contacts from the decrypted contact cache.
   wxview members    List members and owner for an explicit chatroom username.
   wxview sessions   List recent chats from the decrypted session cache.
@@ -165,8 +160,6 @@ Common examples:
   wxview sns notifications --include-read --limit 20 --format json
   wxview version
   wxview cache status --format table
-  wxview index status
-  wxview index refresh
   wxview daemon start
   wxview daemon status
 
@@ -206,7 +199,6 @@ Current scope:
   wxview articles --help
   wxview sns --help
   wxview version --help
-  wxview index --help
   wxview cache --help
   wxview daemon --help`)
 }
@@ -223,8 +215,6 @@ func commandHelp(command string, stdout io.Writer, stderr io.Writer) error {
 		apiUsage(stdout)
 	case "cache":
 		cacheUsage(stdout)
-	case "index":
-		indexUsage(stdout)
 	case "contact", "contacts":
 		contactsUsage(stdout)
 	case "members":
@@ -564,7 +554,6 @@ Internal daemon actions:
   refresh_contacts
   refresh_sessions
   refresh_messages
-  refresh_index
   refresh_avatars
   refresh_favorites
   refresh_sns
@@ -593,8 +582,7 @@ Usage:
 
 Subcommands:
   status         Report source DB, decrypted cache, mtime metadata, and key status.
-  clean-tmp      Remove expired decrypted-cache *.tmp files. Index tmp files
-                 are handled by wxview index clean-tmp.
+  clean-tmp      Remove expired decrypted-cache *.tmp files.
 
 No-argument behavior:
   wxview cache is intentionally the same as wxview cache --help.
@@ -640,51 +628,6 @@ Examples:
   wxview cache status --group messages --format json
   wxview cache status --group media --format csv
   wxview cache clean-tmp`)
-}
-
-func indexUsage(w io.Writer) {
-	fmt.Fprintln(w, `wxview index - Inspect and maintain the derived message index
-
-Usage:
-  wxview index
-  wxview index status [--format table|json|jsonl|csv]
-  wxview index refresh [--format table|json]
-  wxview index rebuild --reset [--format table|json]
-  wxview index clean-tmp [--format table|json]
-  wxview index --help
-
-Subcommands:
-  status         Report whether ~/.wxview/cache/<account>/index/messages.db is
-                 missing, building, interrupted, ready, refreshing, stale, or
-                 schema_mismatch.
-  refresh        Default maintenance action. Refreshes message caches first,
-                 resumes interrupted builds, builds missing indexes, and appends
-                 new rows to a ready index.
-  rebuild        Requires --reset. Deletes the current index/job/tmp files, then
-                 rebuilds from zero.
-  clean-tmp      Remove orphaned index tmp files from the index directory.
-
-Notes:
-  The index is a derived cache. It can be deleted and rebuilt at any time.
-  It stores row references and decoded text for future search acceleration, but
-  does not store DB keys or CDN AES keys. It accelerates messages and timeline
-  when ready and near-realtime. Lag up to 60 seconds is treated as normal
-  near-realtime delay; larger lag falls back to the original scan path.
-  This does not replace wxview cache status, which observes decrypted cache
-  freshness and key coverage.
-
-Flags:
-  --format table   Human-readable table output.
-  --format json    JSON output.
-  --format jsonl   Status only: one JSON object.
-  --format csv     Status only: CSV with header row.
-
-Examples:
-  wxview index status
-  wxview index status --format json
-  wxview index refresh --format json
-  wxview index rebuild --reset
-  wxview index clean-tmp`)
 }
 
 func contactsUsage(w io.Writer) {
@@ -903,7 +846,6 @@ Flags:
   --limit N        Return at most N rows after global time sorting. 0 means no limit.
   --offset N       Skip N rows after global time sorting.
   --source         Include source DB/table/local row metadata for debugging.
-  --no-index       Force the old scan path even when a ready index exists.
   --trace-time     Write per-stage timing trace to stderr. JSON stdout remains
                    valid, so use "2>trace.log" to capture it.
   --refresh        Decrypt message/message_*.db shards and supported
@@ -963,12 +905,8 @@ Examples:
   wxview messages --username wxid_xxx --source --refresh --format json
 
 Runtime behavior:
-  This command reads message rows from local decrypted message caches. When the
-  derived message index is ready and near-realtime, it uses the index to select
-  page row refs and then reads full rows from the original decrypted caches. If
-  the index is missing, building, interrupted, too stale, or unusable, it falls
-  back to a bounded shard scan for limited queries. Use --no-index to compare
-  or debug the scan path. The full sort key is (create_time, seq, local_id,
+  This command reads local decrypted message shards and bounds page candidates
+  when a limit is set. The full sort key is (create_time, seq, local_id,
   source_db): ascending by default, or descending with --order desc.
   Stable pagination requires --limit > 0. If --end is omitted, the first page
   fixes it to the current Unix second; continuation arguments preserve it.
@@ -1057,7 +995,6 @@ Other flags:
   --format jsonl   Newline-delimited JSON, one message item per line.
   --format csv     CSV message items with header row.
   --source         Include source DB/table/local row metadata for debugging.
-  --no-index       Force the old scan path even when a ready index exists.
   --refresh        Refresh contact and message caches before querying.
 
 Examples:
@@ -1067,12 +1004,8 @@ Examples:
   wxview timeline --username wxid_xxx --date yesterday --format jsonl
 
 Runtime behavior:
-  This command selects conversations from the local contact cache. When the
-  derived message index is ready, near-realtime, and covers every selected
-  conversation, it uses the index to select global timeline row refs and then
-  reads full rows from the original decrypted caches. If the index is missing,
-  building, interrupted, too stale, incomplete, or unusable, it falls back to the
-  old fan-out scan.
+  This command selects conversations from the local contact cache and merges
+  matching messages directly from the decrypted message shards.
   Prefer small time windows and narrow selectors such as --kind chatroom
   --query AI.
   JSON output includes meta.schema_version and meta.timezone. It also includes
@@ -1987,235 +1920,6 @@ func runCacheCleanTmp(args []string, stdout io.Writer) error {
 	return writeCleanTmpResult(stdout, result.Path, result.Removed, result.RemovedBytes, result.Kept, *format)
 }
 
-func runIndex(ctx context.Context, args []string, stdout io.Writer) error {
-	if len(args) == 0 || hasHelp(args) {
-		indexUsage(stdout)
-		return nil
-	}
-	switch args[0] {
-	case "status":
-		return runIndexStatus(ctx, args[1:], stdout)
-	case "refresh":
-		return runIndexRefresh(ctx, args[1:], stdout)
-	case "rebuild":
-		return runIndexRebuild(ctx, args[1:], stdout)
-	case "clean-tmp":
-		return runIndexCleanTmp(ctx, args[1:], stdout)
-	default:
-		return fmt.Errorf("unknown index command: %s; supported forms are `wxview index status`, `wxview index refresh`, `wxview index rebuild --reset`, and `wxview index clean-tmp`", args[0])
-	}
-}
-
-func runIndexStatus(ctx context.Context, args []string, stdout io.Writer) error {
-	if hasHelp(args) {
-		indexUsage(stdout)
-		return nil
-	}
-	fs := flag.NewFlagSet("index status", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-	format := fs.String("format", "table", "table, json, jsonl, or csv")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	if fs.NArg() > 0 {
-		return fmt.Errorf("unexpected index status argument: %s", fs.Arg(0))
-	}
-	if !validFormat(*format) {
-		return fmt.Errorf("invalid format %q: use table, json, jsonl, or csv", *format)
-	}
-	localTarget, ok, err := localIndexStatusTarget()
-	if err != nil {
-		return err
-	}
-	if ok {
-		cachePaths, err := localMessageCachePathsReadOnly(localTarget.account)
-		if err != nil {
-			return err
-		}
-		status, err := msgindex.StatusFor(ctx, localTarget.indexPath, cachePaths)
-		if err != nil {
-			return err
-		}
-		return writeIndexStatus(stdout, status, *format)
-	}
-	target, err := key.DiscoverContactDB()
-	if err != nil {
-		return err
-	}
-	indexPath, err := msgindex.LocalPath(target.Account)
-	if err != nil {
-		return err
-	}
-	cachePaths, err := messageCachePathsReadOnly(target.Account)
-	if err != nil {
-		return err
-	}
-	status, err := msgindex.StatusFor(ctx, indexPath, cachePaths)
-	if err != nil {
-		return err
-	}
-	return writeIndexStatus(stdout, status, *format)
-}
-
-type indexStatusTarget struct {
-	account   string
-	indexPath string
-	modTime   time.Time
-}
-
-func localIndexStatusTarget() (indexStatusTarget, bool, error) {
-	base, err := app.BaseDir()
-	if err != nil {
-		return indexStatusTarget{}, false, err
-	}
-	cacheRoot := filepath.Join(base, "cache")
-	if target, ok, err := localIndexStatusTargetFromGlob(filepath.Join(cacheRoot, "*", "index", "messages.db")); err != nil || ok {
-		return target, ok, err
-	}
-	contacts, err := filepath.Glob(filepath.Join(cacheRoot, "*", "contact", "contact.db"))
-	if err != nil {
-		return indexStatusTarget{}, false, err
-	}
-	targets := make([]indexStatusTarget, 0, len(contacts))
-	for _, contactPath := range contacts {
-		info, err := os.Stat(contactPath)
-		if err != nil || info.IsDir() {
-			continue
-		}
-		accountDir := filepath.Dir(filepath.Dir(contactPath))
-		account := filepath.Base(accountDir)
-		targets = append(targets, indexStatusTarget{
-			account:   account,
-			indexPath: filepath.Join(accountDir, "index", "messages.db"),
-			modTime:   info.ModTime(),
-		})
-	}
-	if len(targets) == 0 {
-		return indexStatusTarget{}, false, nil
-	}
-	sort.SliceStable(targets, func(i, j int) bool {
-		if !targets[i].modTime.Equal(targets[j].modTime) {
-			return targets[i].modTime.After(targets[j].modTime)
-		}
-		return targets[i].account < targets[j].account
-	})
-	return targets[0], true, nil
-}
-
-func localIndexStatusTargetFromGlob(pattern string) (indexStatusTarget, bool, error) {
-	matches, err := filepath.Glob(pattern)
-	if err != nil {
-		return indexStatusTarget{}, false, err
-	}
-	targets := make([]indexStatusTarget, 0, len(matches))
-	for _, path := range matches {
-		info, err := os.Stat(path)
-		if err != nil || info.IsDir() {
-			continue
-		}
-		accountDir := filepath.Dir(filepath.Dir(path))
-		targets = append(targets, indexStatusTarget{
-			account:   filepath.Base(accountDir),
-			indexPath: path,
-			modTime:   info.ModTime(),
-		})
-	}
-	if len(targets) == 0 {
-		return indexStatusTarget{}, false, nil
-	}
-	sort.SliceStable(targets, func(i, j int) bool {
-		if !targets[i].modTime.Equal(targets[j].modTime) {
-			return targets[i].modTime.After(targets[j].modTime)
-		}
-		return targets[i].account < targets[j].account
-	})
-	return targets[0], true, nil
-}
-
-func runIndexRefresh(ctx context.Context, args []string, stdout io.Writer) error {
-	if hasHelp(args) {
-		indexUsage(stdout)
-		return nil
-	}
-	fs := flag.NewFlagSet("index refresh", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-	format := fs.String("format", "table", "table or json")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	if fs.NArg() > 0 {
-		return fmt.Errorf("unexpected index refresh argument: %s", fs.Arg(0))
-	}
-	if *format != "table" && *format != "json" {
-		return fmt.Errorf("invalid format %q: use table or json", *format)
-	}
-	result, err := buildMessageIndex(ctx, true, false)
-	if err != nil {
-		return err
-	}
-	return writeIndexBuildResult(stdout, result, *format)
-}
-
-func runIndexRebuild(ctx context.Context, args []string, stdout io.Writer) error {
-	if hasHelp(args) {
-		indexUsage(stdout)
-		return nil
-	}
-	fs := flag.NewFlagSet("index rebuild", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-	format := fs.String("format", "table", "table or json")
-	reset := fs.Bool("reset", false, "delete the current index and rebuild from zero")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	if fs.NArg() > 0 {
-		return fmt.Errorf("unexpected index rebuild argument: %s", fs.Arg(0))
-	}
-	if !*reset {
-		return fmt.Errorf("wxview index rebuild requires --reset")
-	}
-	if *format != "table" && *format != "json" {
-		return fmt.Errorf("invalid format %q: use table or json", *format)
-	}
-	result, err := buildMessageIndex(ctx, true, true)
-	if err != nil {
-		return err
-	}
-	return writeIndexBuildResult(stdout, result, *format)
-}
-
-func runIndexCleanTmp(ctx context.Context, args []string, stdout io.Writer) error {
-	if hasHelp(args) {
-		indexUsage(stdout)
-		return nil
-	}
-	fs := flag.NewFlagSet("index clean-tmp", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-	format := fs.String("format", "table", "table or json")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	if fs.NArg() > 0 {
-		return fmt.Errorf("unexpected index clean-tmp argument: %s", fs.Arg(0))
-	}
-	if *format != "table" && *format != "json" {
-		return fmt.Errorf("invalid format %q: use table or json", *format)
-	}
-	target, err := key.DiscoverContactDB()
-	if err != nil {
-		return err
-	}
-	indexPath, err := msgindex.LocalPath(target.Account)
-	if err != nil {
-		return err
-	}
-	result, err := msgindex.CleanIndexTmpResult(indexPath)
-	if err != nil {
-		return err
-	}
-	return writeCleanTmpResult(stdout, result.Path, result.Removed, result.RemovedBytes, result.Kept, *format)
-}
-
 func waitForDaemonHealthy(ctx context.Context, client daemon.Client, timeout time.Duration, exitCh <-chan error) (bool, error) {
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
@@ -2313,10 +2017,10 @@ func runContacts(ctx context.Context, args []string, stdout io.Writer) error {
 	kind := fs.String("kind", contacts.KindAll, "all, friend, chatroom, or other")
 	query := fs.String("query", "", "contains search over username, alias, remark, and nick_name")
 	username := fs.String("username", "", "exact username lookup")
-	sortBy := fs.String("sort", "username", "username or name")
 	limit := fs.Int("limit", 0, "maximum rows to return; 0 means no limit")
 	offset := fs.Int("offset", 0, "rows to skip before returning results")
 	countOnly := fs.Bool("count", false, "output only count after filters")
+	sortBy := fs.String("sort", "username", "username or name")
 	detail := fs.Bool("detail", false, "return rich detail for --username")
 	refresh := fs.Bool("refresh", false, "refresh decrypted contact cache before listing")
 	if err := fs.Parse(args); err != nil {
@@ -2547,7 +2251,8 @@ func runMessages(ctx context.Context, args []string, stdout io.Writer, stderr io
 	limit := fs.Int("limit", 0, "maximum rows to return after sorting; 0 means no limit")
 	offset := fs.Int("offset", 0, "rows to skip after sorting")
 	includeSource := fs.Bool("source", false, "include source DB/table/local row metadata")
-	noIndex := fs.Bool("no-index", false, "force old message-cache scan path")
+	// Accept continuation arguments emitted by older versions.
+	fs.Bool("no-index", false, "deprecated compatibility flag")
 	refresh := fs.Bool("refresh", false, "refresh decrypted message caches before listing")
 	traceTime := fs.Bool("trace-time", false, "write per-stage timing trace to stderr")
 	if err := fs.Parse(args); err != nil {
@@ -2591,14 +2296,13 @@ func runMessages(ctx context.Context, args []string, stdout io.Writer, stderr io
 		IncludeSource:            *includeSource,
 		Limit:                    *limit,
 		Offset:                   *offset,
-		NoIndex:                  *noIndex,
 		WantHasMore:              *format == "json",
 		CacheMode:                wxquery.CacheMode{Refresh: *refresh},
 	})
 	if err != nil {
 		return err
 	}
-	trace.Mark("query_rows", traceInt("rows", len(result.Items)), "query_mode="+result.Execution.QueryMode, "index_status="+result.Execution.IndexStatus, "index_reason="+result.Execution.IndexReason)
+	trace.Mark("query_rows", traceInt("rows", len(result.Items)), "query_mode="+result.Execution.QueryMode)
 	if *format == "json" {
 		meta := messagesMeta{
 			SchemaVersion:      messageEnvelopeSchemaVersion,
@@ -2617,10 +2321,10 @@ func runMessages(ctx context.Context, args []string, stdout io.Writer, stderr io
 		}
 		if result.HasMore && result.NextAfterSeq > 0 {
 			meta.NextAfterSeq = result.NextAfterSeq
-			meta.NextArgs = buildMessagesNextArgs(usernameValue, result.Range.Start, result.Range.HasStart, result.Range.End, result.Range.HasEnd, meta.NextAfterSeq, *limit, *includeSource, *noIndex)
+			meta.NextArgs = buildMessagesNextArgs(usernameValue, result.Range.Start, result.Range.HasStart, result.Range.End, result.Range.HasEnd, meta.NextAfterSeq, *limit, *includeSource)
 		}
 		if result.NextCursor != "" {
-			meta.NextArgs = buildMessagesCursorArgs(usernameValue, result, *limit, *includeSource, *noIndex)
+			meta.NextArgs = buildMessagesCursorArgs(usernameValue, result, *limit, *includeSource)
 		}
 		err := writeMessageEnvelope(stdout, meta, result.Items)
 		trace.Mark("write_output", "format=json", traceInt("returned", len(result.Items)))
@@ -2729,7 +2433,8 @@ func runTimeline(ctx context.Context, args []string, stdout io.Writer) error {
 	limit := fs.Int("limit", 200, "maximum rows to return; max 1000")
 	cursor := fs.String("cursor", "", "opaque cursor from meta.next_cursor")
 	includeSource := fs.Bool("source", false, "include source DB/table/local row metadata")
-	noIndex := fs.Bool("no-index", false, "force old message-cache scan path")
+	// Accept continuation arguments emitted by older versions.
+	fs.Bool("no-index", false, "deprecated compatibility flag")
 	refresh := fs.Bool("refresh", false, "refresh contact and message caches before listing")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -2769,7 +2474,6 @@ func runTimeline(ctx context.Context, args []string, stdout io.Writer) error {
 		Limit:         *limit,
 		Cursor:        *cursor,
 		IncludeSource: *includeSource,
-		NoIndex:       *noIndex,
 		CacheMode:     wxquery.CacheMode{Refresh: *refresh},
 	})
 	if err != nil {
@@ -2798,7 +2502,7 @@ func runTimeline(ctx context.Context, args []string, stdout io.Writer) error {
 		}
 		if result.HasMore {
 			meta.NextCursor = result.NextCursor
-			meta.NextArgs = buildTimelineNextArgs(usernameValue, *kind, queryValue, result.Range.StartLabel, result.Range.EndLabel, *limit, result.NextCursor, *includeSource, *noIndex)
+			meta.NextArgs = buildTimelineNextArgs(usernameValue, *kind, queryValue, result.Range.StartLabel, result.Range.EndLabel, *limit, result.NextCursor, *includeSource)
 		}
 		return writeMessageEnvelope(stdout, meta, result.Items)
 	}
@@ -3064,131 +2768,6 @@ type messageEnvelope struct {
 	Items []messages.Message `json:"items"`
 }
 
-func buildMessageIndex(ctx context.Context, refreshCaches bool, reset bool) (msgindex.BuildResult, error) {
-	if refreshCaches {
-		socketPath, err := app.SocketPath()
-		if err != nil {
-			return msgindex.BuildResult{}, err
-		}
-		client := daemon.Client{SocketPath: socketPath, Timeout: 10 * time.Minute}
-		if client.Healthy(ctx) && !reset {
-			if _, err := client.Call(ctx, daemon.ActionRefreshIndex); err != nil {
-				if !isUnknownDaemonAction(err) {
-					return msgindex.BuildResult{}, err
-				}
-			} else {
-				target, err := key.DiscoverContactDB()
-				if err != nil {
-					return msgindex.BuildResult{}, err
-				}
-				indexPath, err := msgindex.LocalPath(target.Account)
-				if err != nil {
-					return msgindex.BuildResult{}, err
-				}
-				cachePaths, err := messageCachePathsReadOnly(target.Account)
-				if err != nil {
-					return msgindex.BuildResult{}, err
-				}
-				status, err := msgindex.StatusFor(ctx, indexPath, cachePaths)
-				if err != nil {
-					return msgindex.BuildResult{}, err
-				}
-				return msgindex.BuildResult{Status: status}, nil
-			}
-		}
-		if _, err := wxquery.NewRuntime().CacheRefresh(ctx, wxquery.RefreshRequest{Scope: "messages"}); err != nil {
-			return msgindex.BuildResult{}, err
-		}
-	}
-	target, contactPath, ok := key.HasContactCache()
-	if !ok {
-		return msgindex.BuildResult{}, fmt.Errorf("contact cache does not exist: run `wxview init` or `wxview contacts --refresh --format json` first")
-	}
-	paths, allExist, err := key.MessageCachePaths()
-	if err != nil {
-		return msgindex.BuildResult{}, err
-	}
-	if !allExist {
-		return msgindex.BuildResult{}, fmt.Errorf("message cache does not exist: run `wxview init` or `wxview messages --refresh --username USERNAME` first")
-	}
-	sessionPath := ""
-	if _, path, err := wxquery.NewRuntime().SessionCacheTargetPath(ctx, wxquery.CacheMode{Refresh: refreshCaches}); err == nil {
-		sessionPath = path
-	}
-	opts := msgindex.BuildOptions{
-		Account:           target.Account,
-		ContactCachePath:  contactPath,
-		SessionCachePath:  sessionPath,
-		MessageCachePaths: paths,
-	}
-	if reset {
-		return msgindex.Build(ctx, opts)
-	}
-	return msgindex.Refresh(ctx, opts)
-}
-
-func messageCachePathsReadOnly(account string) ([]string, error) {
-	targets, err := key.DiscoverMessageDBs()
-	if err != nil {
-		return nil, err
-	}
-	base, err := app.BaseDir()
-	if err != nil {
-		return nil, err
-	}
-	paths := make([]string, 0, len(targets))
-	for _, target := range targets {
-		targetAccount := target.Account
-		if targetAccount == "" {
-			targetAccount = account
-		}
-		paths = append(paths, filepath.Join(base, "cache", app.SafeAccountDir(targetAccount), filepath.FromSlash(target.DBRelPath)))
-	}
-	return paths, nil
-}
-
-func localMessageCachePathsReadOnly(account string) ([]string, error) {
-	base, err := app.BaseDir()
-	if err != nil {
-		return nil, err
-	}
-	pattern := filepath.Join(base, "cache", app.SafeAccountDir(account), "message", "message_*.db")
-	matches, err := filepath.Glob(pattern)
-	if err != nil {
-		return nil, err
-	}
-	paths := make([]string, 0, len(matches))
-	for _, path := range matches {
-		info, err := os.Stat(path)
-		if err != nil || info.IsDir() {
-			continue
-		}
-		if _, ok := localMessageShardIndex(filepath.Base(path)); !ok {
-			continue
-		}
-		paths = append(paths, path)
-	}
-	sort.SliceStable(paths, func(i, j int) bool {
-		left, _ := localMessageShardIndex(filepath.Base(paths[i]))
-		right, _ := localMessageShardIndex(filepath.Base(paths[j]))
-		return left < right
-	})
-	return paths, nil
-}
-
-func localMessageShardIndex(name string) (int, bool) {
-	if !strings.HasPrefix(name, "message_") || !strings.HasSuffix(name, ".db") {
-		return 0, false
-	}
-	text := strings.TrimSuffix(strings.TrimPrefix(name, "message_"), ".db")
-	index, err := strconv.Atoi(text)
-	return index, err == nil
-}
-
-func isUnknownDaemonAction(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "unknown daemon action")
-}
-
 func validFormat(format string) bool {
 	switch format {
 	case "table", "json", "jsonl", "csv":
@@ -3275,7 +2854,7 @@ func traceBool(name string, value bool) string {
 	return name + "=" + strconv.FormatBool(value)
 }
 
-func buildMessagesNextArgs(username string, start int64, hasStart bool, end int64, hasEnd bool, nextAfterSeq int64, limit int, includeSource bool, noIndex bool) []string {
+func buildMessagesNextArgs(username string, start int64, hasStart bool, end int64, hasEnd bool, nextAfterSeq int64, limit int, includeSource bool) []string {
 	args := []string{"messages", "--username", username}
 	if hasStart {
 		args = append(args, "--start", wxquery.FormatMetaTime(start, true))
@@ -3290,14 +2869,11 @@ func buildMessagesNextArgs(username string, start int64, hasStart bool, end int6
 	if includeSource {
 		args = append(args, "--source")
 	}
-	if noIndex {
-		args = append(args, "--no-index")
-	}
 	args = append(args, "--format", "json")
 	return args
 }
 
-func buildTimelineNextArgs(username string, kind string, query string, start string, end string, limit int, cursor string, includeSource bool, noIndex bool) []string {
+func buildTimelineNextArgs(username string, kind string, query string, start string, end string, limit int, cursor string, includeSource bool) []string {
 	args := []string{"timeline"}
 	if username != "" {
 		args = append(args, "--username", username)
@@ -3310,9 +2886,6 @@ func buildTimelineNextArgs(username string, kind string, query string, start str
 	args = append(args, "--start", start, "--end", end, "--limit", strconv.Itoa(limit), "--cursor", cursor)
 	if includeSource {
 		args = append(args, "--source")
-	}
-	if noIndex {
-		args = append(args, "--no-index")
 	}
 	args = append(args, "--format", "json")
 	return args
@@ -3339,8 +2912,6 @@ var articleFields = []string{"id", "account_username", "account_display_name", "
 var snsPostFields = []string{"id", "author_username", "time", "timestamp", "content", "location", "media_count"}
 var snsNotificationFields = []string{"id", "type", "from_username", "from_nick_name", "content", "feed_id", "feed_author_username", "feed_preview", "time", "timestamp"}
 var cacheStatusFields = []string{"group", "account", "db_rel_path", "status", "key_status", "source_size", "cache_size", "source_mtime", "cache_mtime", "refreshed_at", "reason"}
-var indexStatusFields = []string{"status", "query_mode", "schema_version", "source_db_count", "indexed_rows", "source_rows", "covered_chats", "built_at", "refreshed_at", "job_state", "lag_seconds", "session_lag_seconds", "lag_policy", "reason", "refresh_mode", "active_chats_checked", "active_chats_refreshed", "reconcile_sources_pending", "reconcile_tables_checked", "path", "progress_percent", "progress_rows", "progress_total_rows", "checked_tables", "covered_tables", "progress_total_tables", "progress_current", "progress_updated_at"}
-var indexBuildFields = append(append([]string{}, indexStatusFields...), "duration_ms")
 var cleanTmpFields = []string{"path", "removed", "removed_bytes", "kept"}
 
 func writeIdentity(w io.Writer, info identity.Info, format string) error {
@@ -3649,36 +3220,6 @@ func writeCacheStatuses(w io.Writer, list []key.CacheStatusItem, format string) 
 	}
 }
 
-func writeIndexStatus(w io.Writer, status msgindex.Status, format string) error {
-	switch format {
-	case "json":
-		enc := jsonEncoder(w)
-		enc.SetIndent("", "  ")
-		return enc.Encode(status)
-	case "jsonl":
-		return jsonEncoder(w).Encode(status)
-	case "csv":
-		return writeRows(w, indexStatusFields, 1, func(i int) []string { return indexStatusValues(status) })
-	case "table":
-		return writeKeyValues(w, indexStatusFields, indexStatusValues(status))
-	default:
-		return fmt.Errorf("unsupported format: %s", format)
-	}
-}
-
-func writeIndexBuildResult(w io.Writer, result msgindex.BuildResult, format string) error {
-	switch format {
-	case "json":
-		enc := jsonEncoder(w)
-		enc.SetIndent("", "  ")
-		return enc.Encode(result)
-	case "table":
-		return writeKeyValues(w, indexBuildFields, indexBuildValues(result))
-	default:
-		return fmt.Errorf("unsupported format: %s", format)
-	}
-}
-
 func writeCleanTmpResult(w io.Writer, path string, removed int, removedBytes int64, kept int, format string) error {
 	values := []string{path, strconv.Itoa(removed), strconv.FormatInt(removedBytes, 10), strconv.Itoa(kept)}
 	switch format {
@@ -3967,45 +3508,6 @@ func cacheStatusValues(item key.CacheStatusItem) []string {
 	}
 }
 
-func indexStatusValues(status msgindex.Status) []string {
-	return []string{
-		status.Status,
-		status.QueryMode,
-		strconv.Itoa(status.SchemaVersion),
-		strconv.Itoa(status.SourceDBCount),
-		strconv.FormatInt(status.IndexedRows, 10),
-		strconv.FormatInt(status.SourceRows, 10),
-		strconv.Itoa(status.CoveredChats),
-		status.BuiltAt,
-		status.RefreshedAt,
-		status.JobState,
-		strconv.FormatInt(status.LagSeconds, 10),
-		strconv.FormatInt(status.SessionLagSeconds, 10),
-		status.LagPolicy,
-		status.Reason,
-		status.RefreshMode,
-		strconv.Itoa(status.ActiveChatsChecked),
-		strconv.Itoa(status.ActiveChatsRefreshed),
-		strconv.Itoa(status.ReconcileSourcesPending),
-		strconv.Itoa(status.ReconcileTablesChecked),
-		status.Path,
-		fmt.Sprintf("%.2f", status.ProgressPercent),
-		strconv.FormatInt(status.ProgressRows, 10),
-		strconv.FormatInt(status.ProgressTotalRows, 10),
-		strconv.Itoa(status.CheckedTables),
-		strconv.Itoa(status.CoveredTables),
-		strconv.Itoa(status.ProgressTotalTables),
-		status.ProgressCurrent,
-		status.ProgressUpdatedAt,
-	}
-}
-
-func indexBuildValues(result msgindex.BuildResult) []string {
-	values := indexStatusValues(result.Status)
-	values = append(values, strconv.FormatInt(result.DurationMS, 10))
-	return values
-}
-
 func writeKeyValues(w io.Writer, fields []string, values []string) error {
 	for i, field := range fields {
 		value := ""
@@ -4130,7 +3632,7 @@ func cleanCell(s string) string {
 	return s
 }
 
-func buildMessagesCursorArgs(username string, result wxquery.MessagesResult, limit int, source, noIndex bool) []string {
+func buildMessagesCursorArgs(username string, result wxquery.MessagesResult, limit int, source bool) []string {
 	args := []string{"messages", "--username", username, "--order", result.Order, "--cursor", result.NextCursor, "--limit", strconv.Itoa(limit), "--format", "json"}
 	if result.Range.HasStart {
 		args = append(args, "--start", strconv.FormatInt(result.Range.Start, 10))
@@ -4140,9 +3642,6 @@ func buildMessagesCursorArgs(username string, result wxquery.MessagesResult, lim
 	}
 	if source {
 		args = append(args, "--source")
-	}
-	if noIndex {
-		args = append(args, "--no-index")
 	}
 	return args
 }

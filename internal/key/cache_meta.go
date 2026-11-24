@@ -109,30 +109,6 @@ func (entry cacheMetadataEntry) sourceSignature() sourceSignature {
 	return sourceSignature{Size: entry.SourceSize, MTimeNS: entry.SourceMTimeNS, WALPresent: entry.WALPresent, WALSize: entry.WALSize, WALMTimeNS: entry.WALMTimeNS, WALHeader: entry.WALHeader}
 }
 
-// SnapshotCaches recognizes the existing account metadata, without account
-// discovery or source access. Index readers use this to reject lagging snapshots.
-func SnapshotCaches(paths []string) map[string]bool {
-	result := make(map[string]bool)
-	loaded := make(map[string]cacheMetadata)
-	for _, path := range paths {
-		root := filepath.Dir(filepath.Dir(path))
-		meta, ok := loaded[root]
-		if !ok {
-			meta, _ = loadCacheMetadata(filepath.Join(root, cacheMetaRelPath))
-			loaded[root] = meta
-		}
-		relative, err := filepath.Rel(root, path)
-		if err != nil {
-			continue
-		}
-		entry, ok := meta.Files[filepath.ToSlash(relative)]
-		if ok && entry.SnapshotVersion == 1 && samePath(entry.CachePath, path) {
-			result[path] = true
-		}
-	}
-	return result
-}
-
 func loadCacheMetadata(path string) (cacheMetadata, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {

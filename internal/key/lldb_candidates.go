@@ -48,10 +48,8 @@ func discoverCaptureTargets(root string) ([]TargetDB, map[string]bool, error) {
 	if len(required) == 1 {
 		return nil, nil, fmt.Errorf("no numeric message shards in selected account")
 	}
-	for _, rel := range []string{
-		"message/message_fts.db", "message/message_resource.db", "message/message_revoke.db",
-		"session/session.db", "head_image/head_image.db", "favorite/favorite.db", "sns/sns.db",
-	} {
+	optional := append([]string{sessionRelPath, headImageRelPath, favoriteRelPath, snsRelPath}, messageAuxRelPaths...)
+	for _, rel := range optional {
 		_, err := os.Lstat(filepath.Join(root, filepath.FromSlash(rel)))
 		if os.IsNotExist(err) {
 			continue
