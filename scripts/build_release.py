@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def run(*args, env=None):
-    return subprocess.check_output(args, cwd=ROOT, env=env, text=True).strip()
+    return subprocess.check_output(args, cwd=ROOT, env=env, encoding='utf-8', timeout=300).strip()
 
 
 def main():
