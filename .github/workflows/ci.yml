@@ -37,3 +37,22 @@ jobs:
       - name: Python helper synthetic tests
         if: runner.os == 'macOS'
         run: python3 -B -m unittest discover -s internal/key/lldbhelper
+      - name: Package and smoke release binaries
+        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'pull_request' && startsWith(github.head_ref, 'codex/release-'))
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            python scripts/build_release.py --target windows/amd64
+          else
+            python3 scripts/build_release.py --target darwin/amd64 --target darwin/arm64
+          fi
+      - name: Upload release packages
+        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'pull_request' && startsWith(github.head_ref, 'codex/release-'))
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ runner.os }}
+          if-no-files-found: error
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/build-manifest-*.json

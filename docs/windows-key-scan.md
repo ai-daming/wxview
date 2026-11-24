@@ -1,12 +1,12 @@
-# Windows Config.Cipher 取钥（未发布，待实机验收）
+# Windows Config.Cipher 取钥（v0.6.0 实验性，待微信实机验收）
 
-对应 [issue #5](https://github.com/ai-daming/wxview/issues/5)。本轮授权完成本地实现、合成测试和构建检查；用户目前没有可用的 Windows 验收环境。
+对应 [issue #5](https://github.com/ai-daming/wxview/issues/5)，自 v0.6.0 起随 Windows 包分发。实现、合成链路及 Windows CI 已通过；真实 Windows 微信验收仍待可用环境，后文带日期的记录保留当时的验证范围。
 
 ## 使用与支持边界
 
 源码构建后仍使用 `wxview init`，无需新增参数。微信保持运行且登录；进程读取权限不足时按错误提示使用管理员终端。`init` 只保存通过验证的密钥，缓存仍由已有刷新命令维护。
 
-这不是已发布 v0.4.2 包所包含的能力，也不是微信 4.2 兼容声明。尚未通过真实 Windows 微信验证，4.1.12.24 的原始故障报告 #1 也仍未回查。ARM64 客户端的对象布局及普通用户权限环境均不能从合成测试推断为支持。
+该能力从 v0.6.0 提供；这不是微信 4.2 兼容声明。尚未通过真实 Windows 微信验证，4.1.12.24 的原始故障报告 #1 也仍未回查。ARM64 客户端的对象布局及普通用户权限环境均不能从合成测试推断为支持。
 
 ## 处理链路与设计选择
 
@@ -52,7 +52,7 @@ GOOS=windows GOARCH=amd64 CGO_ENABLED=0 GOCACHE=$(pwd)/.cache/go-build go build 
 未执行全仓回归。以下仍待真实 Windows 环境完成，不勾选 issue 完成：
 
 - [ ] 记录操作系统、微信版本、客户端／进程架构和权限；从正式 init 完成必需库取钥与缓存查询。
-- [ ] 在授权会话内两次人工发送不同标记，逐次刷新并确认新消息出现。当前不处理 WAL，须区分等待主库 checkpoint 与取钥失败。
+- [ ] 在授权会话内两次人工发送不同标记，逐次刷新并确认新消息出现。v0.6.0 已接入已提交 WAL 的只读快照；验收需对照主库与 WAL，区分取钥、刷新与源文件持续变化的错误。
 - [ ] 回查 #1 的微信 4.1.12.24 环境；没有该版本则保留未验证状态。
 - [ ] 验证 Windows 原生枚举、分块读取、Ctrl-C、无权限及退出进程的实际行为。
 
@@ -73,4 +73,4 @@ review 修复后的测试和构建结果不改变前述实机验收边界。未�
 - 调研对照 [yichen-wechat-local-vault](https://github.com/mcncarl/yichen-skills/tree/c9f47ecbcda513c0ce160bb55bfaf01060765053/yichen-wechat-local-vault) 的已知 salt 解码思路、Windows 验收和来源记录；未执行或安装其脚本。扫描会话、Go 解码／遍历、HMAC 集成和测试在 Wxview 内实现。
 - SQLite 合成夹具使用公开的 [SQLITE_FCNTL_RESERVE_BYTES](https://sqlite.org/c3ref/c_fcntl_begin_atomic_write.html) 接口生成。
 
-后续若分发包含此实现的二进制，发布包需同时携带上述完整 MIT 许可证及来源说明；本轮不发布或改变源码版本号，本地 Windows 验收包使用 `0.5.0-issue5-local` 构建标识。
+v0.6.0 发布包携带上述完整 MIT 许可证及本来源说明。早期本地 Windows 验收包的 `0.5.0-issue5-local` 是历史构建标识，不代表正式发布版本。

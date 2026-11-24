@@ -1,6 +1,6 @@
 # 查询的数据覆盖与新鲜度
 
-源码中的消息 JSON envelope 和 WebAPI 数据响应新增 `meta.data_coverage`。它描述本次查询使用或尝试使用的本地数据库缓存，供 AI、脚本及上层应用判断读取状态；不增加业务判断。
+v0.6.0 起，消息 JSON envelope 和 WebAPI 数据响应新增 `meta.data_coverage`。它描述本次查询使用或尝试使用的本地数据库缓存，供 AI、脚本及上层应用判断读取状态；不增加业务判断。
 
 ## 输出
 
